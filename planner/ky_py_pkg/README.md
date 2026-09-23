@@ -336,4 +336,19 @@ After launching the script:
 ```bash
 cd ~/vrx_ws
 source install/setup.bash
-ros2 run planner trajectory_publisher
+!!CHOOSE THE ONE .csv you want
+ros2 run planner trajectory_publisher --ros-args -p csv_file:=sydney_coverage_path.csv
+/ros2 run planner trajectory_publisher --ros-args -p csv_file:=sydney_straight_path.csv
+/ros2 run planner trajectory_publisher --ros-args -p csv_file:=sydney_curve_path.csv
+!!CHOOSE THE ONE .csv you want
+
+The node reads the trajectory CSV file and publishes it on:
+/coverage_path
+
+Message type:
+nav_msgs/msg/Path
+
+check:
+```bash
+ros2 topic info /coverage_path
+

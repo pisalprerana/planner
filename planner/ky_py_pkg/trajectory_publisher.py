@@ -25,11 +25,19 @@ class TrajectoryPublisher(Node):
             qos
         )
 
-        # CSV 文件位置
-        self.csv_path = Path(
-            '~/vrx_ws/src/planner/planner/ky_py_pkg/output/'
-            'sydney_coverage_path.csv'
+        # output 文件夹
+        output_dir = Path(
+            '~/vrx_ws/src/planner/planner/ky_py_pkg/output'
         ).expanduser()
+
+        # 声明参数：默认文件名
+        self.declare_parameter('csv_file', 'sydney_coverage_path.csv')
+        csv_file = self.get_parameter('csv_file').value
+
+        # 如果传进来的是相对文件名，就默认去 output 里找
+        self.csv_path = Path(csv_file)
+        if not self.csv_path.is_absolute():
+            self.csv_path = output_dir / csv_file
 
         # 读取 CSV
         self.path_msg = self.load_csv()
