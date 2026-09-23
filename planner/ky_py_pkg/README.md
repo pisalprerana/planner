@@ -1,4 +1,4 @@
-
+CLEAN output when PUSH
 ## sydney_occupancy.py
 
 ### Description
@@ -75,22 +75,6 @@ After execution, the script displays the generated occupancy map and saves the r
 
 ---
 
-### Planning Pipeline
-
-```
-Gazebo terrain
-      ↓
-sydney_occupancy.py
-      ↓
-Occupancy map
-      ↓
-Path planning (Straight / Curve / Coverage / A*)
-```
-
-
-
-
-==================================================================================
 
 
 ## sydney_straight.py
@@ -168,20 +152,9 @@ The script displays the occupancy map with the straight trajectory and saves the
 
 ---
 
-### Planning Pipeline
-
-```text
-Occupancy map
-      ↓
-sydney_straight.py
-      ↓
-Straight reference trajectory
-      ↓
-Trajectory tracking controller
-```
 
 
-==================================================================================
+
 ## sydney_curve.py
 
 ### Description
@@ -262,17 +235,7 @@ The script displays the occupancy map with the curved trajectory and saves the g
 
 ---
 
-### Planning Pipeline
 
-```text
-Occupancy map
-      ↓
-sydney_curve.py
-      ↓
-Curved reference trajectory
-      ↓
-Trajectory tracking controller
-```
 
 ## sydney_coverage.py
 
@@ -366,18 +329,11 @@ After launching the script:
 
 ---
 
-### Planning Pipeline
 
-```text
-Occupancy map
-      ↓
-Select coverage area
-      ↓
-Generate coverage targets
-      ↓
-A* path connection
-      ↓
-Coverage trajectory
-      ↓
-Trajectory tracking controller
-```
+
+## Run trajectory publisher
+
+```bash
+cd ~/vrx_ws
+source install/setup.bash
+ros2 run planner trajectory_publisher
