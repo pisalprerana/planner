@@ -9,7 +9,7 @@ def convert_path(input_file):
 
     # output filename
     output_path = input_path.parent / (
-        input_path.stem + "_local.csv"
+        input_path.stem + "sydney_coverage_path.csv"
     )
 
     # read csv

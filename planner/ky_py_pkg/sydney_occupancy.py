@@ -27,11 +27,11 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 # Sydney Regatta map area
-x_min = -700.0
-x_max = -300.0
+x_min = -1200.0
+x_max = 1400.0
 
-y_min = 100.0
-y_max = 400.0
+y_min = -400.0
+y_max = 900.0
 
 resolution = 2.0
 

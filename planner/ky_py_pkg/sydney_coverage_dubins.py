@@ -5,6 +5,7 @@ import math
 import csv
 
 from pathlib import Path
+from dubins_path import generate_dubins_path
 
 
 # ============================================================
@@ -14,8 +15,12 @@ from pathlib import Path
 # Directory containing this Python file
 BASE_DIR = Path(__file__).resolve().parent
 
-DATA_DIR = BASE_DIR / "data"
-OUTPUT_DIR = BASE_DIR / "output"
+PROJECT_DIR = BASE_DIR
+if not (PROJECT_DIR / "data").is_dir() and (BASE_DIR.parent / "data").is_dir():
+    PROJECT_DIR = BASE_DIR.parent
+
+DATA_DIR = PROJECT_DIR / "data"
+OUTPUT_DIR = PROJECT_DIR / "output"
 
 # Automatically create output directory
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -24,9 +29,12 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 occupancy_path = DATA_DIR / "sydney_local_occupancy.npy"
 
 # Output files
-path_npy = OUTPUT_DIR / "sydney_coverage_path.npy"
-path_csv = OUTPUT_DIR / "sydney_coverage_path.csv"
-path_png = OUTPUT_DIR / "sydney_coverage_path.png"
+path_npy = OUTPUT_DIR / "sydney_coverage_dubins_path.npy"
+path_csv = OUTPUT_DIR / "sydney_coverage_dubins_path.csv"
+path_png = OUTPUT_DIR / "sydney_coverage_dubins_path.png"
+
+STRAIGHT_STEP = 2.0
+CURVE_STEP = 0.5
 
 
 # ============================================================
@@ -382,8 +390,6 @@ def select_coverage_rectangle():
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
 
-    ax.legend()
-
     points = []
     selecting = True
     drag_state = None
@@ -657,6 +663,28 @@ if path_width <= 0:
     )
 
 
+try:
+
+    turning_radius = float(
+        input(
+            "Enter minimum turning radius [m]: "
+        )
+    )
+
+except ValueError:
+
+    raise RuntimeError(
+        "Minimum turning radius must be a number."
+    )
+
+
+if not math.isfinite(turning_radius) or turning_radius <= 0:
+
+    raise RuntimeError(
+        "Minimum turning radius must be a positive finite value."
+    )
+
+
 row_spacing = max(
     1,
     int(
@@ -809,6 +837,7 @@ def find_free_segments(
 # ============================================================
 
 coverage_targets = []
+coverage_lines_grid = []
 
 direction_left_to_right = True
 
@@ -875,6 +904,20 @@ for row in rows:
                 seg_start
             )
 
+        fallback_yaw = (
+            0.0
+            if direction_left_to_right
+            else math.pi
+        )
+
+        coverage_lines_grid.append(
+            (
+                start_point,
+                end_point,
+                fallback_yaw
+            )
+        )
+
 
         coverage_targets.append(
             start_point
@@ -906,33 +949,171 @@ print("========================================")
 print("COVERAGE")
 print("========================================")
 
-print(
-    "Number of coverage targets:",
-    len(coverage_targets)
-)
+print("Number of coverage targets:", len(coverage_targets))
+print("Number of coverage lines:", len(coverage_lines_grid))
 
 
 # ============================================================
-# COVERAGE TARGETS -> WORLD PATH
+# COVERAGE LINES + DUBINS TRANSITIONS
 # ============================================================
 
-world_path = []
+def sample_straight_segment(start_xy, end_xy, yaw, step_size):
 
-
-for row, col in coverage_targets:
-
-    x, y = grid_to_world(
-        row,
-        col
+    distance = math.hypot(
+        end_xy[0] - start_xy[0],
+        end_xy[1] - start_xy[1]
     )
 
-    world_path.append(
-        (
-            x,
-            y
+    if distance <= 1e-12:
+
+        return np.asarray(
+            [[start_xy[0], start_xy[1], yaw]],
+            dtype=np.float64
+        )
+
+    sample_count = max(
+        1,
+        int(
+            math.ceil(
+                distance / step_size
+            )
         )
     )
 
+    fractions = np.linspace(
+        0.0,
+        1.0,
+        sample_count + 1
+    )
+
+    x_values = (
+        start_xy[0]
+        + fractions * (end_xy[0] - start_xy[0])
+    )
+
+    y_values = (
+        start_xy[1]
+        + fractions * (end_xy[1] - start_xy[1])
+    )
+
+    yaw_values = np.full(
+        sample_count + 1,
+        yaw
+    )
+
+    return np.column_stack(
+        (x_values, y_values, yaw_values)
+    )
+
+
+def align_yaw(yaw, reference_yaw):
+
+    return yaw + 2.0 * math.pi * round(
+        (reference_yaw - yaw) / (2.0 * math.pi)
+    )
+
+
+world_path_parts = []
+baseline_path_parts = []
+coverage_lines_world = []
+dubins_transitions = []
+previous_line_end = None
+
+
+for start_grid, end_grid, fallback_yaw in coverage_lines_grid:
+
+    start_xy = np.asarray(
+        grid_to_world(*start_grid),
+        dtype=np.float64
+    )
+
+    end_xy = np.asarray(
+        grid_to_world(*end_grid),
+        dtype=np.float64
+    )
+
+    dx = end_xy[0] - start_xy[0]
+    dy = end_xy[1] - start_xy[1]
+    line_length = math.hypot(dx, dy)
+    line_yaw = (
+        math.atan2(dy, dx)
+        if line_length > 1e-12
+        else fallback_yaw
+    )
+
+    coverage_lines_world.append(
+        np.vstack((start_xy, end_xy))
+    )
+
+    if previous_line_end is not None:
+
+        baseline_transition = generate_dubins_path(
+            previous_line_end,
+            [start_xy[0], start_xy[1], line_yaw],
+            turning_radius,
+            CURVE_STEP,
+            CURVE_STEP
+        )
+
+        baseline_path_parts.append(
+            baseline_transition[1:]
+        )
+
+        transition = generate_dubins_path(
+            previous_line_end,
+            [start_xy[0], start_xy[1], line_yaw],
+            turning_radius,
+            STRAIGHT_STEP,
+            CURVE_STEP
+        )
+
+        dubins_transitions.append(transition)
+        world_path_parts.append(transition[1:])
+        line_yaw = align_yaw(
+            line_yaw,
+            transition[-1, 2]
+        )
+
+    baseline_straight_segment = sample_straight_segment(
+        start_xy,
+        end_xy,
+        line_yaw,
+        CURVE_STEP
+    )
+
+    straight_segment = sample_straight_segment(
+        start_xy,
+        end_xy,
+        line_yaw,
+        STRAIGHT_STEP
+    )
+
+    if previous_line_end is None:
+
+        baseline_path_parts.append(
+            baseline_straight_segment
+        )
+
+        world_path_parts.append(straight_segment)
+
+    else:
+
+        baseline_path_parts.append(
+            baseline_straight_segment[1:]
+        )
+
+        world_path_parts.append(straight_segment[1:])
+
+    previous_line_end = straight_segment[-1]
+
+
+world_path = np.vstack(
+    world_path_parts
+)
+
+world_path_before_adaptive_sampling = np.vstack(
+    baseline_path_parts
+)
 
 world_path = np.asarray(
     world_path,
@@ -975,7 +1156,8 @@ with open(
     writer.writerow([
         "waypoint_id",
         "x",
-        "y"
+        "y",
+        "yaw"
     ])
 
 
@@ -986,7 +1168,8 @@ with open(
         writer.writerow([
             i,
             point[0],
-            point[1]
+            point[1],
+            point[2]
         ])
 
 
@@ -1006,7 +1189,12 @@ print(
 )
 
 print(
-    "Number of waypoints:",
+    "Number of waypoints before adaptive sampling:",
+    len(world_path_before_adaptive_sampling)
+)
+
+print(
+    "Number of waypoints after adaptive sampling:",
     len(world_path)
 )
 
@@ -1027,19 +1215,10 @@ print(
 
 if len(world_path) > 1:
 
-    dx = np.diff(
-        world_path[:, 0]
-    )
-
-    dy = np.diff(
-        world_path[:, 1]
-    )
-
     total_distance = np.sum(
-        np.sqrt(
-            dx**2
-            +
-            dy**2
+        np.linalg.norm(
+            np.diff(world_path[:, :2], axis=0),
+            axis=1
         )
     )
 
@@ -1116,32 +1295,51 @@ ax.plot(
 
 
 # ============================================================
-# PATH
+# ORIGINAL COVERAGE LINES
 # ============================================================
+
+for index, line in enumerate(coverage_lines_world):
+
+    ax.plot(
+        line[:, 0],
+        line[:, 1],
+        color="tab:blue",
+        linewidth=0.55,
+        alpha=0.7,
+        label="Straight coverage lines" if index == 0 else None
+    )
+
+
+# ============================================================
+# DUBINS TRANSITIONS
+# ============================================================
+
+for index, transition in enumerate(dubins_transitions):
+
+    ax.plot(
+        transition[:, 0],
+        transition[:, 1],
+        color="tab:orange",
+        linewidth=0.7,
+        label="Dubins transitions" if index == 0 else None
+    )
+
+ax.scatter(
+    world_path[0, 0],
+    world_path[0, 1],
+    marker="o",
+    s=12,
+    color="tab:green",
+    label="Trajectory start"
+)
 
 ax.plot(
     world_path[:, 0],
     world_path[:, 1],
-    linewidth=0.8,
-    label="Coverage path"
-)
-
-
-# ============================================================
-# COVERAGE ENTRY
-# ============================================================
-
-first_target_world = grid_to_world(
-    *coverage_targets[0]
-)
-
-
-ax.scatter(
-    first_target_world[0],
-    first_target_world[1],
-    marker="o",
-    s=20,
-    label="Coverage entry"
+    color="black",
+    linewidth=0.55,
+    alpha=0.85,
+    label="Final trajectory"
 )
 
 
@@ -1158,7 +1356,7 @@ ax.set_ylabel(
 )
 
 ax.set_title(
-    "Sydney Regatta Coverage Path"
+    "Sydney Regatta Dubins Coverage Path"
 )
 
 ax.set_xlim(
