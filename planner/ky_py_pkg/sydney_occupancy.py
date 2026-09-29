@@ -5,6 +5,16 @@ from matplotlib.path import Path
 from pathlib import Path as FilePath
 import os
 
+from planner.ky_py_pkg.sydney_coordinates import (
+    BOAT_START_X,
+    BOAT_START_Y,
+    DEFAULT_MARGIN,
+    DEFAULT_RESOLUTION,
+    calculate_world_bounds,
+    grid_shape,
+    save_coordinates,
+    world_to_grid,
+)
 
 # ============================================================
 # PROJECT PATHS
@@ -26,20 +36,14 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # CONFIG
 # ============================================================
 
-# Sydney Regatta map area
-x_min = -1200.0
-x_max = 1400.0
-
-y_min = -400.0
-y_max = 900.0
-
-resolution = 2.0
+# Full Sydney map configuration
+resolution = DEFAULT_RESOLUTION
+margin = DEFAULT_MARGIN
 
 
-# Boat initial position
-boat_x = -533.7402476486775
-boat_y = 161.7656784075805
-
+# Boat initial position in Gazebo world coordinates
+boat_x = BOAT_START_X
+boat_y = BOAT_START_Y
 
 # ============================================================
 # FIND SYDNEY REGATTA DAE FILE
@@ -123,6 +127,11 @@ npy_path = (
     / "sydney_local_occupancy.npy"
 )
 
+coordinates_path = (
+    DATA_DIR
+    / "sydney_world_coordinates.json"
+)
+
 
 print()
 print("========================================")
@@ -196,6 +205,18 @@ vertices = values.reshape(
 
 # Sydney Regatta DAE node scale
 vertices *= 0.001
+
+# Calculate full map boundaries from all terrain vertices
+coordinates = calculate_world_bounds(
+    vertices,
+    resolution=resolution,
+    margin=margin,
+)
+
+x_min = coordinates["x_min"]
+x_max = coordinates["x_max"]
+y_min = coordinates["y_min"]
+y_max = coordinates["y_max"]
 
 
 print()
@@ -336,20 +357,7 @@ print(
 # CREATE GRID
 # ============================================================
 
-grid_width = int(
-    np.ceil(
-        (x_max - x_min)
-        / resolution
-    )
-)
-
-
-grid_height = int(
-    np.ceil(
-        (y_max - y_min)
-        / resolution
-    )
-)
+grid_height, grid_width = grid_shape(coordinates)
 
 
 grid = np.zeros(
@@ -607,25 +615,10 @@ for tri_indices in triangles:
 # BOAT GRID POSITION
 # ============================================================
 
-boat_ix = int(
-    np.floor(
-        (
-            boat_x
-            - x_min
-        )
-        / resolution
-    )
-)
-
-
-boat_iy = int(
-    np.floor(
-        (
-            boat_y
-            - y_min
-        )
-        / resolution
-    )
+boat_iy, boat_ix = world_to_grid(
+    boat_x,
+    boat_y,
+    coordinates,
 )
 
 
@@ -719,6 +712,11 @@ else:
 np.save(
     npy_path,
     grid
+)
+
+save_coordinates(
+    coordinates,
+    coordinates_path,
 )
 
 
