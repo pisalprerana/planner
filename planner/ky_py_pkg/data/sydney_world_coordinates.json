@@ -1,0 +1,9 @@
+{
+    "frame_id": "world",
+    "resolution": 2.0,
+    "margin": 10.0,
+    "x_min": -1144.0,
+    "x_max": 1344.0,
+    "y_min": -354.0,
+    "y_max": 824.0
+}

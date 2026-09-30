@@ -5,7 +5,8 @@ import math
 import csv
 
 from pathlib import Path
-from dubins_path import generate_dubins_path
+from planner.ky_py_pkg import sydney_coordinates
+from planner.ky_py_pkg.dubins_path import generate_dubins_path
 
 
 # ============================================================
@@ -28,6 +29,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # Input occupancy grid
 occupancy_path = DATA_DIR / "sydney_local_occupancy.npy"
 
+coordinates_path = DATA_DIR / "sydney_world_coordinates.json"
+
 # Output files
 path_npy = OUTPUT_DIR / "sydney_coverage_dubins_path.npy"
 path_csv = OUTPUT_DIR / "sydney_coverage_dubins_path.csv"
@@ -41,28 +44,16 @@ CURVE_STEP = 0.5
 # CONFIG
 # ============================================================
 
-# Occupancy map coordinate range
-# Must match sydney_occupancy.py
+# Load the coordinate system generated with the occupancy grid
+coordinates = sydney_coordinates.load_coordinates(
+    coordinates_path
+)
 
-#map_x_min = -700.0
-#map_x_max = -300.0
-
-#map_y_min = 100.0
-#map_y_max = 400.0
-
-x_min = -1200.0
-x_max = 1400.0
-
-y_min = -400.0
-y_max = 900.0
-
-# Alias the map bounds using the names expected by the rest of this script.
-map_x_min = x_min
-map_x_max = x_max
-map_y_min = y_min
-map_y_max = y_max
-
-resolution = 2.0
+map_x_min = coordinates["x_min"]
+map_x_max = coordinates["x_max"]
+map_y_min = coordinates["y_min"]
+map_y_max = coordinates["y_max"]
+resolution = coordinates["resolution"]
 
 
 # ============================================================
@@ -90,6 +81,17 @@ occupancy = np.load(occupancy_path)
 
 grid_height, grid_width = occupancy.shape
 
+expected_shape = sydney_coordinates.grid_shape(
+    coordinates
+)
+
+if occupancy.shape != expected_shape:
+    raise ValueError(
+        "Occupancy grid shape does not match "
+        f"coordinate metadata: grid={occupancy.shape}, "
+        f"metadata={expected_shape}"
+    )
+
 print()
 print("========================================")
 print("MAP")
@@ -107,35 +109,19 @@ print("Y:", map_y_min, "to", map_y_max)
 # ============================================================
 
 def world_to_grid(x, y):
-
-    col = int(
-        np.floor(
-            (x - map_x_min) / resolution
-        )
+    return sydney_coordinates.world_to_grid(
+        x,
+        y,
+        coordinates,
     )
-
-    row = int(
-        np.floor(
-            (y - map_y_min) / resolution
-        )
-    )
-
-    return row, col
 
 
 def grid_to_world(row, col):
-
-    x = (
-        map_x_min
-        + (col + 0.5) * resolution
+    return sydney_coordinates.grid_to_world(
+        row,
+        col,
+        coordinates,
     )
-
-    y = (
-        map_y_min
-        + (row + 0.5) * resolution
-    )
-
-    return x, y
 
 
 def inside_grid(row, col):

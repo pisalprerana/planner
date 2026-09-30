@@ -24,7 +24,10 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'trajectory_publisher = planner.ky_py_pkg.trajectory_publisher:main',
-        ],
+    'trajectory_publisher = planner.ky_py_pkg.trajectory_publisher:main',
+    'waypoint_array = planner.waypoint_array:main',
+    'gps_imu_tf_broadcaster = planner.ky_py_pkg.gps_imu_tf_broadcaster:main',
+'path_frame_transformer = planner.ky_py_pkg.path_frame_transformer:main'
+],
     },
 )
