@@ -26,6 +26,13 @@ def generate_launch_description():
             ),
             Node(
                 package='planner',
+                executable='dubins_reference_path_publisher',
+                name='dubins_reference_path_publisher',
+                parameters=[str(parameters_file)],
+                output='screen',
+            ),
+            Node(
+                package='planner',
                 executable='path_frame_transformer',
                 name='waypoint_array_transformer',
                 parameters=[str(parameters_file)],
