@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 package_name = 'planner'
@@ -10,8 +13,20 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (
+            os.path.join('share', package_name, 'config'),
+            glob('config/*.yaml'),
+        ),
+        (
+            os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py'),
+        ),
+        (
+            os.path.join('share', package_name, 'output'),
+            glob('planner/output/*.csv'),
+        ),
     ],
-    install_requires=['setuptools', 'pandas'],
+    install_requires=['setuptools'],
     zip_safe=True,
     maintainer='bot',
     maintainer_email='pisalprerana@gmail.com',
@@ -24,10 +39,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-    'trajectory_publisher = planner.ky_py_pkg.trajectory_publisher:main',
-    'waypoint_array = planner.waypoint_array:main',
-    'gps_imu_tf_broadcaster = planner.ky_py_pkg.gps_imu_tf_broadcaster:main',
-'path_frame_transformer = planner.ky_py_pkg.path_frame_transformer:main'
-],
+            'waypoint_array_dubins = planner.waypoint_array_dubins:main',
+            'gps_imu_tf_broadcaster = planner.gps_imu_tf_broadcaster:main',
+            'path_frame_transformer = planner.path_frame_transformer:main',
+        ],
     },
 )

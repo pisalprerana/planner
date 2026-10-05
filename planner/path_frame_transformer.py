@@ -1,5 +1,7 @@
 """Transform world waypoint arrays into the live boat frame."""
 
+import math
+
 import rclpy
 from geometry_msgs.msg import PointStamped
 from rclpy.duration import Duration
@@ -18,14 +20,17 @@ class WaypointArrayTransformer(Node):
 
         self.declare_parameter(
             "input_topic",
-            "/planner/waypoints",
+            "/planner/waypoints_dubins",
         )
         self.declare_parameter(
             "output_topic",
-            "/planner/waypoints_local",
+            "/planner/waypoints_dubins_local",
         )
         self.declare_parameter("source_frame", "world")
-        self.declare_parameter("target_frame", "base_link")
+        self.declare_parameter(
+            "target_frame",
+            "wamv/wamv/base_link",
+        )
         self.declare_parameter("publish_rate", 2.0)
 
         input_topic = self.get_parameter(
@@ -99,17 +104,17 @@ class WaypointArrayTransformer(Node):
             )
             return
 
-        if len(message.data) % 3 != 0:
+        if len(message.data) % 4 != 0:
             self.get_logger().error(
-                "Waypoint array length must be divisible by 3. "
-                "Expected [id, x, y, id, x, y, ...]"
+                "Waypoint array length must be divisible by 4. "
+                "Expected [id, x, y, yaw, id, x, y, yaw, ...]"
             )
             return
 
         self.world_waypoints = list(message.data)
 
         self.get_logger().info(
-            f"Stored {len(self.world_waypoints) // 3} "
+            f"Stored {len(self.world_waypoints) // 4} "
             "world waypoints"
         )
 
@@ -149,11 +154,12 @@ class WaypointArrayTransformer(Node):
         for index in range(
             0,
             len(self.world_waypoints),
-            3,
+            4,
         ):
             waypoint_id = self.world_waypoints[index]
             world_x = self.world_waypoints[index + 1]
             world_y = self.world_waypoints[index + 2]
+            world_yaw = self.world_waypoints[index + 3]
 
             world_point = PointStamped()
             world_point.header.frame_id = self.source_frame
@@ -169,11 +175,28 @@ class WaypointArrayTransformer(Node):
                 transform,
             )
 
+            heading_point = PointStamped()
+            heading_point.header.frame_id = self.source_frame
+            heading_point.header.stamp = world_point.header.stamp
+            heading_point.point.x = world_x + math.cos(world_yaw)
+            heading_point.point.y = world_y + math.sin(world_yaw)
+            heading_point.point.z = 0.0
+
+            local_heading_point = do_transform_point(
+                heading_point,
+                transform,
+            )
+            local_yaw = math.atan2(
+                local_heading_point.point.y - local_point.point.y,
+                local_heading_point.point.x - local_point.point.x,
+            )
+
             local_message.data.extend(
                 [
                     waypoint_id,
                     local_point.point.x,
                     local_point.point.y,
+                    local_yaw,
                 ]
             )
 
@@ -182,7 +205,7 @@ class WaypointArrayTransformer(Node):
         if not self.first_local_path_published:
             self.get_logger().info(
                 f"Published "
-                f"{len(local_message.data) // 3} "
+                f"{len(local_message.data) // 4} "
                 "waypoints in the boat frame"
             )
             self.first_local_path_published = True

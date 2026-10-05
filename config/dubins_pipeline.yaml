@@ -1,0 +1,13 @@
+waypoint_array_dubins:
+  ros__parameters:
+    csv_file: sydney_coverage_dubins_path.csv
+    output_topic: /planner/waypoints_dubins
+    publish_rate: 1.0
+
+waypoint_array_transformer:
+  ros__parameters:
+    input_topic: /planner/waypoints_dubins
+    output_topic: /planner/waypoints_dubins_local
+    source_frame: world
+    target_frame: wamv/wamv/base_link
+    publish_rate: 2.0

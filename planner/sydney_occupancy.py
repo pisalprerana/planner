@@ -5,7 +5,7 @@ from matplotlib.path import Path
 from pathlib import Path as FilePath
 import os
 
-from planner.ky_py_pkg.sydney_coordinates import (
+from planner.sydney_coordinates import (
     BOAT_START_X,
     BOAT_START_Y,
     DEFAULT_MARGIN,
