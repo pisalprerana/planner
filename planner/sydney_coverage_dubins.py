@@ -2057,3 +2057,33 @@ plt.savefig(
 print("PNG:", path_png)
 
 plt.show()
+
+# ============================================================
+# USER CONFIRMATION
+# ============================================================
+
+print()
+print("========================================")
+print("PATH CONFIRMATION")
+print("========================================")
+
+while True:
+    confirmation = input(
+        "Use this generated path? [y/n]: "
+    ).strip().lower()
+
+    if confirmation in ("y", "yes"):
+        print(
+            "Path accepted. The mission can now be launched."
+        )
+        break
+
+    if confirmation in ("n", "no"):
+        print(
+            "Path rejected. Returning to path selection."
+        )
+        raise SystemExit(2)
+
+    print(
+        "Invalid answer. Enter y or n."
+    )
