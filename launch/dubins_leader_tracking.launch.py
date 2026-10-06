@@ -1,3 +1,5 @@
+import csv
+import math
 import os
 
 from ament_index_python.packages import (
@@ -9,9 +11,11 @@ from launch import LaunchDescription
 
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     SetEnvironmentVariable,
+    TimerAction,
 )
 
 from launch.conditions import IfCondition
@@ -25,6 +29,9 @@ from launch.substitutions import (
 )
 
 from launch_ros.actions import Node
+
+import vrx_gz.launch
+from vrx_gz.model import Model
 
 
 def launch_experiment(context):
@@ -131,35 +138,147 @@ def launch_experiment(context):
         # Empty string makes VRX use the normal WAM-V model.
         robot_urdf = ''
 
+    # Spawn R1 at the first waypoint in the planner's Gazebo ENU CSV.
+    trajectory_csv = os.path.join(
+        get_package_share_directory('planner'),
+        'output',
+        'sydney_coverage_dubins_path.csv',
+    )
+
+    with open(
+        trajectory_csv,
+        'r',
+        newline='',
+        encoding='utf-8',
+    ) as csv_file:
+        reader = csv.DictReader(csv_file)
+
+        required_columns = {'x', 'y', 'yaw'}
+        if reader.fieldnames is None:
+            raise RuntimeError(
+                f'Trajectory CSV has no header: {trajectory_csv}'
+            )
+
+        missing_columns = required_columns - set(reader.fieldnames)
+        if missing_columns:
+            raise RuntimeError(
+                f'Trajectory CSV is missing columns: '
+                f'{", ".join(sorted(missing_columns))}'
+            )
+
+        first_waypoint = next(reader, None)
+
+    if first_waypoint is None:
+        raise RuntimeError(
+            f'Trajectory CSV contains no waypoints: {trajectory_csv}'
+        )
+
+    try:
+        spawn_x, spawn_y, spawn_yaw = (
+            float(first_waypoint[column])
+            for column in ('x', 'y', 'yaw')
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            f'First trajectory waypoint has invalid ENU pose in '
+            f'{trajectory_csv}: {error}'
+        ) from error
+
+    if not all(
+        math.isfinite(value)
+        for value in (spawn_x, spawn_y, spawn_yaw)
+    ):
+        raise RuntimeError(
+            f'First trajectory waypoint contains a non-finite ENU pose: '
+            f'x={spawn_x}, y={spawn_y}, yaw={spawn_yaw}'
+        )
+
+    r1 = Model(
+        'wamv',
+        'wam-v',
+        [
+            spawn_x,
+            spawn_y,
+            0.0,
+            0.0,
+            0.0,
+            spawn_yaw,
+        ],
+    )
+    if robot_urdf:
+        r1.set_urdf(robot_urdf)
+
     # =========================================================
     # Gazebo / VRX
     # =========================================================
 
-    vrx_launch_file = os.path.join(
-        get_package_share_directory(
-            'vrx_gz'
-        ),
-        'launch',
-        'competition.launch.py'
+    gazebo = []
+    gazebo.extend(
+        vrx_gz.launch.simulation(
+            'sydney_regatta',
+            headless=False,
+            paused=False,
+            extra_gz_args='',
+        )
+    )
+    gazebo.extend(
+        vrx_gz.launch.spawn(
+            'full',
+            'sydney_regatta',
+            [r1],
+        )
+    )
+    gazebo.extend(
+        vrx_gz.launch.competition_bridges(
+            'sydney_regatta',
+            False,
+        )
     )
 
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            vrx_launch_file
-        ),
-        launch_arguments={
-            'world':
-                'sydney_regatta',
+    camera_move_to = TimerAction(
+        period=8.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'gz',
+                    'service',
+                    '-s',
+                    '/gui/move_to',
+                    '--reqtype',
+                    'gz.msgs.StringMsg',
+                    '--reptype',
+                    'gz.msgs.Boolean',
+                    '--timeout',
+                    '3000',
+                    '--req',
+                    'data: "wamv"',
+                ],
+                output='screen',
+            ),
+        ],
+    )
 
-            'urdf':
-                robot_urdf,
-
-            'headless':
-                'False',
-
-            'paused':
-                'False',
-        }.items()
+    camera_follow = TimerAction(
+        period=10.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'gz',
+                    'service',
+                    '-s',
+                    '/gui/follow',
+                    '--reqtype',
+                    'gz.msgs.StringMsg',
+                    '--reptype',
+                    'gz.msgs.Boolean',
+                    '--timeout',
+                    '3000',
+                    '--req',
+                    'data: "wamv"',
+                ],
+                output='screen',
+            ),
+        ],
     )
 
     # =========================================================
@@ -309,12 +428,14 @@ def launch_experiment(context):
     )
 
     return [
-        gazebo,
+        *gazebo,
         vehicle_state,
         planner,
         logger,
         live_map,
         controller,
+        camera_move_to,
+        camera_follow,
     ]
 
 

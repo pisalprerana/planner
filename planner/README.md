@@ -1,11 +1,24 @@
-# ROS 2 planner
+# Sydney Regatta planner
 
-This `ament_python` package provides a Dubins coverage-planning pipeline for
-the Sydney Regatta environment.
+The `planner` ROS 2 Python package creates a coverage trajectory for the
+Sydney Regatta world and makes it available to ROS nodes. Planning operates
+on Gazebo world coordinates. The generated CSV stores each waypoint as
+`waypoint_id,x,y,yaw`, where `x` and `y` are metres and `yaw` is in radians.
 
-## Dubins coverage workflow
+## Requirements
 
-Run commands from the workspace root after sourcing ROS 2 and the workspace:
+- A sourced ROS 2 installation and a colcon workspace
+- Python packages `numpy` and `matplotlib` for map and trajectory generation
+- The Sydney Regatta Gazebo Fuel model, including its terrain mesh at:
+
+  ```text
+  ~/.gz/fuel/fuel.gazebosim.org/openrobotics/models/sydney_regatta/
+  ```
+
+## Generate the map and trajectory
+
+Run these commands from the workspace root (`~/vrx_ws`). Build and source
+the package first so its ROS executables and launch files are available:
 
 ```bash
 cd ~/vrx_ws
@@ -14,42 +27,39 @@ colcon build --packages-select planner --symlink-install
 source install/setup.bash
 ```
 
-Generate or refresh the occupancy grid and its coordinate metadata:
+Generate the occupancy grid and world-coordinate metadata from the installed
+Sydney Regatta terrain mesh:
 
 ```bash
 PYTHONPATH=src/planner python3 -m planner.sydney_occupancy
 ```
 
-The occupancy generator requires the Sydney Regatta Gazebo Fuel mesh:
+This writes the occupancy grid and coordinate metadata to:
 
 ```text
-~/.gz/fuel/fuel.gazebosim.org/openrobotics/models/sydney_regatta/
+src/planner/planner/data/sydney_local_occupancy.npy
+src/planner/planner/data/sydney_world_coordinates.json
 ```
 
-Generate a Dubins coverage trajectory:
+Generate the coverage trajectory using those files:
 
 ```bash
 PYTHONPATH=src/planner python3 -m planner.sydney_coverage_dubins
 ```
 
-The planner uses:
+When prompted, select the two opposite corners of the desired coverage
+rectangle in the map window. The planner creates straight coverage sweeps
+with Dubins transitions and saves:
 
 ```text
-planner/data/sydney_local_occupancy.npy
-planner/data/sydney_world_coordinates.json
+src/planner/planner/output/sydney_coverage_dubins_path.csv
+src/planner/planner/output/sydney_coverage_dubins_path.npy
+src/planner/planner/output/sydney_coverage_dubins_path.png
 ```
 
-It saves the trajectory in `planner/output/`:
-
-```text
-sydney_coverage_dubins_path.csv
-sydney_coverage_dubins_path.npy
-sydney_coverage_dubins_path.png
-```
-
-Build or rebuild the package after generating the CSV. The package setup
-installs CSV files from `planner/output/` into the package share directory,
-where the publisher can find them after ROS installation:
+The CSV has the header `waypoint_id,x,y,yaw`. Rebuild after generating or
+changing the CSV: `setup.py` installs CSV files from `planner/output/` into
+the package share directory, where the ROS publishers load them.
 
 ```bash
 cd ~/vrx_ws
@@ -57,43 +67,54 @@ colcon build --packages-select planner --symlink-install
 source install/setup.bash
 ```
 
-The CSV header is `waypoint_id,x,y,yaw`. Each waypoint is published in the
-flattened `Float64MultiArray` format:
+## Run the ROS pipeline
 
-```text
-[id, x, y, yaw, id, x, y, yaw, ...]
-```
-
-## Launch the Dubins pipeline
+Launch all configured nodes with:
 
 ```bash
 ros2 launch planner dubins_pipeline.launch.py
 ```
 
-This single command starts `gps_imu_tf_broadcaster`,
-`waypoint_array_dubins`, and `path_frame_transformer`. The installed
-configuration is `config/dubins_pipeline.yaml`; it sets:
+The launch file starts four nodes:
 
-- CSV: `sydney_coverage_dubins_path.csv`
-- waypoint topic: `/planner/waypoints_dubins`
-- publisher rate: `1.0` Hz
-- transformer input: `/planner/waypoints_dubins`
-- local output topic: `/planner/waypoints_dubins_local`
-- source and target frames: `world` and `wamv/wamv/base_link`
+- `gps_imu_tf_broadcaster` publishes the boat transform used by the local
+  waypoint transformer.
+- `waypoint_array_dubins` reads the CSV and publishes flattened waypoint
+  arrays on `/planner/waypoints_dubins`.
+- `path_frame_transformer` transforms the waypoint positions and headings
+  from the `world` frame to `wamv/wamv/base_link`, publishing the result on
+  `/planner/waypoints_dubins_local`.
+- `dubins_reference_path_publisher` reads the CSV and publishes a
+  `nav_msgs/Path` on `/planner/reference_path`.
 
-The frame transformer consumes the flattened waypoints, transforms both
-position and heading, and republishes the same four-value format:
+The array topics use the repeated four-value format:
 
 ```text
-/planner/waypoints_dubins
-    -> /planner/waypoints_dubins_local
+[id, x, y, yaw, id, x, y, yaw, ...]
 ```
 
-Defaults are source frame `world` and target frame `wamv/wamv/base_link`. The
-target matches the default child frame published by
-`gps_imu_tf_broadcaster`. The YAML file can be edited to change CSV, topics,
-frames, or publish rates; rebuild and source the workspace after changing
-package files.
+The reference-path publisher converts the CSV's Gazebo ENU coordinates to
+NED coordinates and sets the path frame to `world_ned`. The array publisher
+and frame transformer are a separate output path; they do not use the
+reference publisher's NED conversion.
 
-The Python modules are installed under the `planner` namespace. Local generated
-data and output paths are resolved relative to the module directory.
+## Configuration
+
+The launch file loads `config/dubins_pipeline.yaml` from the installed
+package. It configures the CSV filename, topics, publish rates, and frames.
+The defaults are:
+
+| Node | Setting | Default |
+|---|---|---|
+| `waypoint_array_dubins` | Output topic | `/planner/waypoints_dubins` |
+| `waypoint_array_dubins` | Publish rate | `1.0` Hz |
+| `dubins_reference_path_publisher` | Output topic | `/planner/reference_path` |
+| `dubins_reference_path_publisher` | Output frame | `world_ned` |
+| `dubins_reference_path_publisher` | Publish rate | `1.0` Hz |
+| `path_frame_transformer` | Input topic | `/planner/waypoints_dubins` |
+| `path_frame_transformer` | Output topic | `/planner/waypoints_dubins_local` |
+| `path_frame_transformer` | Source / target frames | `world` / `wamv/wamv/base_link` |
+| `path_frame_transformer` | Publish rate | `2.0` Hz |
+
+After editing package configuration, rebuild and source the workspace before
+launching the pipeline.
