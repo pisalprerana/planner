@@ -14,11 +14,13 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
 
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 
 from launch.launch_description_sources import (
     PythonLaunchDescriptionSource,
@@ -235,50 +237,57 @@ def launch_experiment(context):
         )
     )
 
-    camera_move_to = TimerAction(
-        period=8.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    'gz',
-                    'service',
-                    '-s',
-                    '/gui/move_to',
-                    '--reqtype',
-                    'gz.msgs.StringMsg',
-                    '--reptype',
-                    'gz.msgs.Boolean',
-                    '--timeout',
-                    '3000',
-                    '--req',
-                    'data: "wamv"',
-                ],
-                output='screen',
-            ),
+    camera_move_to_process = ExecuteProcess(
+        cmd=[
+            'gz',
+            'service',
+            '-s',
+            '/gui/move_to',
+            '--reqtype',
+            'gz.msgs.StringMsg',
+            '--reptype',
+            'gz.msgs.Boolean',
+            '--timeout',
+            '3000',
+            '--req',
+            'data: "wamv"',
         ],
+        output='screen',
     )
 
-    camera_follow = TimerAction(
-        period=10.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    'gz',
-                    'service',
-                    '-s',
-                    '/gui/follow',
-                    '--reqtype',
-                    'gz.msgs.StringMsg',
-                    '--reptype',
-                    'gz.msgs.Boolean',
-                    '--timeout',
-                    '3000',
-                    '--req',
-                    'data: "wamv"',
-                ],
-                output='screen',
-            ),
+    camera_follow_process = ExecuteProcess(
+        cmd=[
+            'gz',
+            'service',
+            '-s',
+            '/gui/follow',
+            '--reqtype',
+            'gz.msgs.StringMsg',
+            '--reptype',
+            'gz.msgs.Boolean',
+            '--timeout',
+            '3000',
+            '--req',
+            'data: "wamv"',
         ],
+        output='screen',
+    )
+
+    camera_move_to = TimerAction(
+        period=8.0,
+        actions=[camera_move_to_process],
+    )
+
+    camera_follow_after_move_to = RegisterEventHandler(
+        OnProcessExit(
+            target_action=camera_move_to_process,
+            on_exit=[
+                TimerAction(
+                    period=2.0,
+                    actions=[camera_follow_process],
+                ),
+            ],
+        ),
     )
 
     # =========================================================
@@ -428,6 +437,7 @@ def launch_experiment(context):
     )
 
     return [
+        camera_follow_after_move_to,
         *gazebo,
         vehicle_state,
         planner,
@@ -435,7 +445,6 @@ def launch_experiment(context):
         live_map,
         controller,
         camera_move_to,
-        camera_follow,
     ]
 
 

@@ -815,6 +815,20 @@ def align_yaw(yaw, reference_yaw):
     )
 
 
+def wrapped_yaw_difference(yaw_a, yaw_b):
+    return math.atan2(
+        math.sin(yaw_b - yaw_a),
+        math.cos(yaw_b - yaw_a),
+    )
+
+
+def position_distance(point_a, point_b):
+    return math.hypot(
+        point_b[0] - point_a[0],
+        point_b[1] - point_a[1],
+    )
+
+
 def retreat_point(point, direction, distance):
     """
     Move a point inward along the coverage line.
@@ -1455,6 +1469,111 @@ for index in range(1, len(coverage_lines)):
             "m",
         )
 
+        previous_start = previous_line["start"]
+        previous_end = result["previous_end"]
+        current_start = result["current_start"]
+
+        # The previous coverage line was initially sampled all the way to
+        # its nominal end. A collision-free turn may retreat that endpoint,
+        # so replace the line tail and join the Dubins path at its true start.
+        trimmed_previous_segment = sample_straight_segment(
+            previous_start,
+            previous_end,
+            previous_line["yaw"],
+            STRAIGHT_STEP,
+        )
+        if index > 1:
+            trimmed_previous_segment = trimmed_previous_segment[1:]
+
+        world_path_parts[-1] = trimmed_previous_segment
+
+        if not path_is_component_safe(world_path_parts[-1]):
+            raise RuntimeError(
+                f"Transition {index}: trimmed coverage line "
+                "failed safe-water validation."
+            )
+
+        start_pose = np.asarray(
+            [
+                previous_end[0],
+                previous_end[1],
+                previous_line["yaw"],
+            ]
+        )
+
+        print(
+            "  Interface diagnostic:",
+            "start_pose=", start_pose,
+            "transition[0]=", transition[0],
+            "transition[1]=", transition[1],
+            "transition[-1]=", transition[-1],
+            "next_line_start=", current_start,
+        )
+        print(
+            "  Interface distances:",
+            "line_to_transition_start=",
+            position_distance(
+                world_path_parts[-1][-1],
+                transition[0],
+            ),
+            "transition_start_to_next_sample=",
+            position_distance(transition[0], transition[1]),
+            "transition_end_to_line_start=",
+            position_distance(transition[-1], current_start),
+        )
+        print(
+            "  Interface wrapped yaw differences:",
+            "line_to_transition_start=",
+            wrapped_yaw_difference(
+                world_path_parts[-1][-1, 2],
+                transition[0, 2],
+            ),
+            "transition_start_to_next_sample=",
+            wrapped_yaw_difference(
+                transition[0, 2],
+                transition[1, 2],
+            ),
+            "transition_end_to_next_line=",
+            wrapped_yaw_difference(
+                transition[-1, 2],
+                current_line["yaw"],
+            ),
+        )
+
+        if (
+            position_distance(
+                world_path_parts[-1][-1],
+                transition[0],
+            ) > 1e-8
+            or position_distance(
+                transition[-1],
+                current_start,
+            ) > 1e-8
+        ):
+            raise RuntimeError(
+                f"Transition {index}: Dubins path position "
+                "does not meet the coverage-line endpoints."
+            )
+
+        if (
+            abs(
+                wrapped_yaw_difference(
+                    previous_line["yaw"],
+                    transition[0, 2],
+                )
+            ) > 1e-8
+            or abs(
+                wrapped_yaw_difference(
+                    transition[-1, 2],
+                    current_line["yaw"],
+                )
+            ) > 1e-8
+        ):
+            raise RuntimeError(
+                f"Transition {index}: Dubins path heading "
+                "does not match the coverage-line headings."
+            )
+
         dubins_transitions.append(
             transition
         )
@@ -1465,8 +1584,6 @@ for index in range(1, len(coverage_lines)):
 
         # Continue the current coverage line from the
         # endpoint where the Dubins turn actually arrives.
-        current_start = result["current_start"]
-
         straight_segment = sample_straight_segment(
             current_start,
             current_line["end"],
@@ -1545,6 +1662,50 @@ for index in range(1, len(coverage_lines)):
             len(smoothed),
         )
 
+        print(
+            "  Interface diagnostic:",
+            "start_pose=",
+            [
+                previous_line["end"][0],
+                previous_line["end"][1],
+                previous_line["yaw"],
+            ],
+            "connector[0]=", smoothed[0],
+            "connector[1]=", smoothed[1],
+            "connector[-1]=", smoothed[-1],
+            "next_line_start=", current_start,
+        )
+        print(
+            "  Interface distances:",
+            "line_to_connector_start=",
+            position_distance(
+                world_path_parts[-1][-1],
+                smoothed[0],
+            ),
+            "connector_start_to_next_sample=",
+            position_distance(smoothed[0], smoothed[1]),
+            "connector_end_to_line_start=",
+            position_distance(smoothed[-1], current_start),
+        )
+        print(
+            "  Interface wrapped yaw differences:",
+            "line_to_connector_start=",
+            wrapped_yaw_difference(
+                previous_line["yaw"],
+                smoothed[0, 2],
+            ),
+            "connector_start_to_next_sample=",
+            wrapped_yaw_difference(
+                smoothed[0, 2],
+                smoothed[1, 2],
+            ),
+            "connector_end_to_next_line=",
+            wrapped_yaw_difference(
+                smoothed[-1, 2],
+                current_line["yaw"],
+            ),
+        )
+
         astar_transitions.append(
             smoothed
         )
@@ -1580,7 +1741,10 @@ for index in range(1, len(coverage_lines)):
             )
         )
 
-    previous_line = current_line
+    previous_line = {
+        **current_line,
+        "start": current_start,
+    }
 
 
 # ============================================================
