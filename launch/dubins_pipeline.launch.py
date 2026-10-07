@@ -1,13 +1,24 @@
+
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
+
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    package_share = Path(get_package_share_directory('planner'))
-    parameters_file = package_share / 'config' / 'dubins_pipeline.yaml'
+
+    package_share = Path(
+        get_package_share_directory('planner')
+    )
+
+    parameters_file = (
+        package_share
+        / 'config'
+        / 'dubins_pipeline.yaml'
+    )
 
     return LaunchDescription(
         [
@@ -17,6 +28,7 @@ def generate_launch_description():
                 name='gps_imu_tf_broadcaster',
                 output='screen',
             ),
+
             Node(
                 package='planner',
                 executable='waypoint_array_dubins',
@@ -24,6 +36,7 @@ def generate_launch_description():
                 parameters=[str(parameters_file)],
                 output='screen',
             ),
+
             Node(
                 package='planner',
                 executable='dubins_reference_path_publisher',
@@ -31,11 +44,28 @@ def generate_launch_description():
                 parameters=[str(parameters_file)],
                 output='screen',
             ),
+
             Node(
                 package='planner',
                 executable='path_frame_transformer',
                 name='waypoint_array_transformer',
                 parameters=[str(parameters_file)],
+                output='screen',
+            ),
+
+            Node(
+                package='planner',
+                executable='coverage_path_live_viewer',
+                name='coverage_path_live_viewer',
+                parameters=[
+                    {
+                        'path_csv': str(
+                            package_share
+                            / 'output'
+                            / 'sydney_coverage_dubins_path.csv'
+                        )
+                    }
+                ],
                 output='screen',
             ),
         ]

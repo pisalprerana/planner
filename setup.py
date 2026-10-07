@@ -43,6 +43,8 @@ setup(
             'dubins_reference_path_publisher = planner.dubins_reference_path_publisher:main',
             'gps_imu_tf_broadcaster = planner.gps_imu_tf_broadcaster:main',
             'path_frame_transformer = planner.path_frame_transformer:main',
+            'coverage_path_live_viewer = planner.coverage_path_live_viewer:main',
+
         ],
     },
 )
