@@ -1,12 +1,20 @@
 import json
+import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
+import rclpy
+
+from rclpy.node import Node
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from PyQt5.QtCore import (
     QObject,
+    QProcess,
     QThread,
+    QTimer,
     Qt,
     pyqtSignal,
     pyqtSlot,
@@ -95,6 +103,53 @@ class CoveragePlannerGui(QMainWindow):
         self.planner_thread = None
         self.planner_worker = None
         self.latest_plan = None
+        self.mission_process = None
+
+        # -----------------------------------------------------
+        # Live Gazebo coverage tracking
+        #
+        # Same TF source used by coverage_path_live_viewer.py:
+        #
+        #   world -> wamv/wamv/base_link
+        #
+        # Coordinates remain in Gazebo ENU.
+        # -----------------------------------------------------
+
+        self.trail_x = []
+        self.trail_y = []
+
+        self.previous_x = None
+        self.previous_y = None
+        self.previous_time = None
+
+        self.current_speed = 0.0
+
+        self.boat_dot = None
+        self.boat_trail = None
+        self.boat_text = None
+
+        if not rclpy.ok():
+            rclpy.init(args=None)
+
+        self.ros_node = Node(
+            "coverage_planner_gui_tracker"
+        )
+
+        self.tf_buffer = Buffer()
+
+        self.tf_listener = TransformListener(
+            self.tf_buffer,
+            self.ros_node,
+        )
+
+        self.ros_timer = QTimer(self)
+
+        self.ros_timer.timeout.connect(
+            self.update_live_tracking
+        )
+
+        # Same update rate as coverage_path_live_viewer.py.
+        self.ros_timer.start(100)
 
         self.load_map_data()
 
@@ -196,11 +251,22 @@ class CoveragePlannerGui(QMainWindow):
             self.generate_real_path
         )
 
+        self.launch_button = QPushButton(
+            "Accept and Launch"
+        )
+        self.launch_button.setEnabled(False)
+        self.launch_button.clicked.connect(
+            self.accept_and_launch
+        )
+
         controls_layout.addWidget(
             self.reset_button
         )
         controls_layout.addWidget(
             self.generate_button
+        )
+        controls_layout.addWidget(
+            self.launch_button
         )
 
         main_layout.addLayout(
@@ -244,6 +310,7 @@ class CoveragePlannerGui(QMainWindow):
         self.map_x_max = self.coordinates["x_max"]
         self.map_y_min = self.coordinates["y_min"]
         self.map_y_max = self.coordinates["y_max"]
+
 
     def draw_map_background(self, ax):
 
@@ -584,6 +651,8 @@ class CoveragePlannerGui(QMainWindow):
             result
         )
 
+        self.launch_button.setEnabled(True)
+
         self.status_label.setText(
             "Path generated successfully. "
             f"{len(result['world_path'])} waypoints, "
@@ -612,169 +681,83 @@ class CoveragePlannerGui(QMainWindow):
         self.turning_radius_input.setEnabled(True)
 
     def draw_plan_result(self, result):
+        """Display the same ENU path used by the Gazebo live tracker."""
 
         self.bottom_ax.clear()
 
-        self.draw_map_background(
-            self.bottom_ax
-        )
+        world_path = result["world_path"]
 
-        (
-            x_min,
-            x_max,
-            y_min,
-            y_max,
-        ) = result["coverage_bounds"]
+        path_x = world_path[:, 0]
+        path_y = world_path[:, 1]
+
+        # -----------------------------------------------------
+        # Planned coverage path
+        #
+        # Identical coordinate convention to
+        # coverage_path_live_viewer.py:
+        #
+        # X = Gazebo world X / East
+        # Y = Gazebo world Y / North
+        # -----------------------------------------------------
 
         self.bottom_ax.plot(
-            [
-                x_min,
-                x_max,
-                x_max,
-                x_min,
-                x_min,
-            ],
-            [
-                y_min,
-                y_min,
-                y_max,
-                y_max,
-                y_min,
-            ],
-            linestyle="--",
+            path_x,
+            path_y,
             linewidth=2.0,
-            label="Coverage area",
+            label="Coverage path",
         )
 
-        component_mask = result[
-            "component_mask"
-        ]
+        # -----------------------------------------------------
+        # Actual path travelled by WAM-V
+        # -----------------------------------------------------
 
-        self.bottom_ax.contour(
-            component_mask.astype(float),
-            levels=[0.5],
-            origin="lower",
-            extent=[
-                self.map_x_min,
-                self.map_x_max,
-                self.map_y_min,
-                self.map_y_max,
-            ],
-            linewidths=2.0,
+        self.boat_trail, = self.bottom_ax.plot(
+            self.trail_x,
+            self.trail_y,
+            linewidth=2.0,
+            label="Actual path",
         )
 
-        for index, line in enumerate(
-            result["coverage_lines"]
-        ):
+        # -----------------------------------------------------
+        # Current WAM-V
+        # -----------------------------------------------------
 
-            self.bottom_ax.plot(
-                line[:, 0],
-                line[:, 1],
-                linewidth=0.8,
-                alpha=0.7,
-                label=(
-                    "Coverage lines"
-                    if index == 0
-                    else None
-                ),
-            )
-
-        for index, transition in enumerate(
-            result["dubins_transitions"]
-        ):
-
-            self.bottom_ax.plot(
-                transition[:, 0],
-                transition[:, 1],
-                linewidth=2.0,
-                label=(
-                    "Dubins transitions"
-                    if index == 0
-                    else None
-                ),
-            )
-
-        for index, transition in enumerate(
-            result["astar_transitions"]
-        ):
-
-            self.bottom_ax.plot(
-                transition[:, 0],
-                transition[:, 1],
-                linewidth=1.5,
-                label=(
-                    "A* fallback"
-                    if index == 0
-                    else None
-                ),
-            )
-
-        world_path = result[
-            "world_path"
-        ]
-
-        self.bottom_ax.plot(
-            world_path[:, 0],
-            world_path[:, 1],
-            linewidth=1.0,
-            label="Final trajectory",
-        )
-
-        start = world_path[0]
-        end = world_path[-1]
-
-        self.bottom_ax.scatter(
-            start[0],
-            start[1],
+        self.boat_dot, = self.bottom_ax.plot(
+            [],
+            [],
             marker="o",
-            s=70,
-            zorder=20,
-            label="Start",
+            markersize=9,
+            linestyle="None",
+            label="WAM-V",
         )
 
-        self.bottom_ax.scatter(
-            end[0],
-            end[1],
-            marker="X",
-            s=90,
-            zorder=20,
-            label="End",
-        )
+        # -----------------------------------------------------
+        # Live telemetry
+        # -----------------------------------------------------
 
-        padding = 25.0
-
-        self.bottom_ax.set_xlim(
-            max(
-                self.map_x_min,
-                x_min - padding,
-            ),
-            min(
-                self.map_x_max,
-                x_max + padding,
-            ),
-        )
-
-        self.bottom_ax.set_ylim(
-            max(
-                self.map_y_min,
-                y_min - padding,
-            ),
-            min(
-                self.map_y_max,
-                y_max + padding,
-            ),
-        )
-
-        self.bottom_ax.set_title(
-            "Generated Dubins Coverage Path"
+        self.boat_text = self.bottom_ax.text(
+            0.02,
+            0.98,
+            "Boat position: waiting for TF...",
+            transform=self.bottom_ax.transAxes,
+            verticalalignment="top",
+            bbox={
+                "boxstyle": "round",
+                "facecolor": "white",
+                "alpha": 0.85,
+            },
         )
 
         self.bottom_ax.set_xlabel(
-            "East [m]"
+            "X [m]"
         )
 
         self.bottom_ax.set_ylabel(
-            "North [m]"
+            "Y [m]"
+        )
+
+        self.bottom_ax.set_title(
+            "Sydney Regatta — Live Coverage Path Tracking"
         )
 
         self.bottom_ax.grid(
@@ -784,29 +767,110 @@ class CoveragePlannerGui(QMainWindow):
 
         self.bottom_ax.legend(
             loc="best",
-            fontsize=7,
         )
 
-        self.bottom_ax.text(
-            0.02,
-            0.98,
-            (
-                f"Path width: "
-                f"{result['path_width']:.1f} m\n"
-                f"Turning radius: "
-                f"{result['turning_radius']:.1f} m\n"
-                f"Distance: "
-                f"{result['total_distance']:.1f} m\n"
-                f"Waypoints: "
-                f"{len(world_path)}"
-            ),
-            transform=self.bottom_ax.transAxes,
-            verticalalignment="top",
-            bbox={
-                "boxstyle": "round",
-                "facecolor": "white",
-                "alpha": 0.85,
-            },
+        self.bottom_ax.set_aspect(
+            "equal",
+            adjustable="box",
+        )
+
+        # Keep the whole generated mission visible.
+        padding = 25.0
+
+        self.bottom_ax.set_xlim(
+            float(path_x.min()) - padding,
+            float(path_x.max()) + padding,
+        )
+
+        self.bottom_ax.set_ylim(
+            float(path_y.min()) - padding,
+            float(path_y.max()) + padding,
+        )
+
+        self.bottom_canvas.draw_idle()
+
+    def update_live_tracking(self):
+        """Use the exact TF tracking source used by Gazebo viewer."""
+
+        if self.ros_node is None:
+            return
+
+        # TransformListener receives its TF callbacks here.
+        rclpy.spin_once(
+            self.ros_node,
+            timeout_sec=0.0,
+        )
+
+        if (
+            self.latest_plan is None
+            or self.boat_dot is None
+            or self.boat_trail is None
+            or self.boat_text is None
+        ):
+            return
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                "world",
+                "wamv/wamv/base_link",
+                rclpy.time.Time(),
+            )
+
+        except TransformException:
+            return
+
+        x = transform.transform.translation.x
+        y = transform.transform.translation.y
+
+        current_time = time.monotonic()
+
+        # Same speed calculation as coverage_path_live_viewer.py.
+        if (
+            self.previous_x is not None
+            and self.previous_y is not None
+            and self.previous_time is not None
+        ):
+            delta_x = x - self.previous_x
+            delta_y = y - self.previous_y
+            delta_time = (
+                current_time
+                - self.previous_time
+            )
+
+            if delta_time > 0.0:
+                distance = math.sqrt(
+                    delta_x ** 2
+                    + delta_y ** 2
+                )
+
+                self.current_speed = (
+                    distance / delta_time
+                )
+
+        self.previous_x = x
+        self.previous_y = y
+        self.previous_time = current_time
+
+        # Same behavior as standalone live viewer:
+        # append every TF update.
+        self.trail_x.append(x)
+        self.trail_y.append(y)
+
+        self.boat_dot.set_data(
+            [x],
+            [y],
+        )
+
+        self.boat_trail.set_data(
+            self.trail_x,
+            self.trail_y,
+        )
+
+        self.boat_text.set_text(
+            f"Boat position:\n"
+            f"X: {x:.2f} m\n"
+            f"Y: {y:.2f} m\n"
+            f"Speed: {self.current_speed:.2f} m/s"
         )
 
         self.bottom_canvas.draw_idle()
@@ -822,7 +886,18 @@ class CoveragePlannerGui(QMainWindow):
         self.coverage_points.clear()
         self.latest_plan = None
 
+        self.trail_x.clear()
+        self.trail_y.clear()
+
+        self.previous_x = None
+        self.previous_y = None
+        self.previous_time = None
+        self.current_speed = 0.0
+
         self.generate_button.setEnabled(
+            False
+        )
+        self.launch_button.setEnabled(
             False
         )
 
@@ -833,6 +908,134 @@ class CoveragePlannerGui(QMainWindow):
 
         self.draw_top_map()
         self.draw_empty_bottom()
+
+    def accept_and_launch(self):
+        """Launch the existing VRX mission using the generated path."""
+
+        if self.latest_plan is None:
+            return
+
+        if (
+            self.mission_process is not None
+            and self.mission_process.state()
+            != QProcess.NotRunning
+        ):
+            return
+
+        script_path = (
+            BASE_DIR.parent
+            / "scripts"
+            / "run_dubins_mission.sh"
+        )
+
+        if not script_path.exists():
+            self.status_label.setText(
+                f"Mission script not found: {script_path}"
+            )
+            return
+
+        self.launch_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+
+        self.status_label.setText(
+            "Building planner package and launching mission..."
+        )
+
+        self.mission_process = QProcess(self)
+
+        self.mission_process.setWorkingDirectory(
+            str(BASE_DIR.parent)
+        )
+
+        self.mission_process.setProcessChannelMode(
+            QProcess.MergedChannels
+        )
+
+        self.mission_process.readyReadStandardOutput.connect(
+            self.read_mission_output
+        )
+
+        self.mission_process.finished.connect(
+            self.on_mission_finished
+        )
+
+        self.mission_process.start(
+            "/usr/bin/bash",
+            [
+                str(script_path),
+                "--skip-planner",
+            ],
+        )
+
+    def read_mission_output(self):
+        """Read mission output without blocking the GUI."""
+
+        if self.mission_process is None:
+            return
+
+        output = bytes(
+            self.mission_process.readAllStandardOutput()
+        ).decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        if not output:
+            return
+
+        print(
+            output,
+            end="",
+            flush=True,
+        )
+
+        lines = [
+            line.strip()
+            for line in output.splitlines()
+            if line.strip()
+        ]
+
+        if lines:
+            self.status_label.setText(
+                lines[-1][:160]
+            )
+
+    def on_mission_finished(
+        self,
+        exit_code,
+        exit_status,
+    ):
+        """Handle mission process termination."""
+
+        if exit_code == 0:
+            self.status_label.setText(
+                "Mission process finished."
+            )
+        else:
+            self.status_label.setText(
+                f"Mission exited with code {exit_code}."
+            )
+
+        self.reset_button.setEnabled(True)
+
+        if self.latest_plan is not None:
+            self.launch_button.setEnabled(True)
+
+    def closeEvent(self, event):
+        """Cleanly stop the GUI ROS node."""
+
+        if hasattr(self, "ros_timer"):
+            self.ros_timer.stop()
+
+        if getattr(self, "ros_node", None) is not None:
+            self.ros_node.destroy_node()
+            self.ros_node = None
+
+        if rclpy.ok():
+            rclpy.shutdown()
+
+        event.accept()
 
     def position_on_right_third(self):
 

@@ -271,7 +271,10 @@ def launch_experiment(context):
     planner = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             planner_launch_file
-        )
+        ),
+        launch_arguments={
+            'show_live_tracker': 'false',
+        }.items(),
     )
 
     # =========================================================
