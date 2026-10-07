@@ -1,5 +1,8 @@
 import json
 import math
+import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -98,12 +101,39 @@ class CoveragePlannerGui(QMainWindow):
 
         self.setWindowTitle("VRX Coverage Planner")
 
+        # The current Qt layout has an effective minimum width
+        # of about 840 px. Locking it prevents GNOME/XWayland
+        # from unexpectedly enlarging the window.
+        self.gui_target_width = 840
+        self.setFixedWidth(
+            self.gui_target_width
+        )
+
         self.coverage_points = []
 
         self.planner_thread = None
         self.planner_worker = None
         self.latest_plan = None
         self.mission_process = None
+        self.mission_pgid = None
+
+        # Gazebo native-window positioning / lifecycle.
+        self.gazebo_layout_attempts = 0
+        self.gazebo_window_seen = False
+        self.gazebo_missing_checks = 0
+
+        self.gazebo_layout_timer = QTimer(self)
+        self.gazebo_layout_timer.timeout.connect(
+            self.position_gazebo_window
+        )
+
+        # Once Gazebo has appeared, watch for it closing.
+        # Closing Gazebo should shut down the complete ROS
+        # mission rather than leave controllers behind.
+        self.gazebo_watch_timer = QTimer(self)
+        self.gazebo_watch_timer.timeout.connect(
+            self.watch_gazebo_window
+        )
 
         # -----------------------------------------------------
         # Live Gazebo coverage tracking
@@ -140,6 +170,7 @@ class CoveragePlannerGui(QMainWindow):
         self.tf_listener = TransformListener(
             self.tf_buffer,
             self.ros_node,
+            spin_thread=True,
         )
 
         self.ros_timer = QTimer(self)
@@ -736,11 +767,13 @@ class CoveragePlannerGui(QMainWindow):
         # -----------------------------------------------------
 
         self.boat_text = self.bottom_ax.text(
-            0.02,
-            0.98,
+            0.01,
+            1.55,
             "Boat position: waiting for TF...",
             transform=self.bottom_ax.transAxes,
             verticalalignment="top",
+            horizontalalignment="left",
+            clip_on=False,
             bbox={
                 "boxstyle": "round",
                 "facecolor": "white",
@@ -766,7 +799,10 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         self.bottom_ax.legend(
-            loc="best",
+            loc="upper right",
+            bbox_to_anchor=(0.99, 1.57),
+            borderaxespad=0.0,
+            fontsize=8,
         )
 
         self.bottom_ax.set_aspect(
@@ -787,6 +823,11 @@ class CoveragePlannerGui(QMainWindow):
             float(path_y.max()) + padding,
         )
 
+        # Leave room above the axes for telemetry + legend.
+        self.bottom_figure.subplots_adjust(
+            top=0.52
+        )
+
         self.bottom_canvas.draw_idle()
 
     def update_live_tracking(self):
@@ -794,12 +835,6 @@ class CoveragePlannerGui(QMainWindow):
 
         if self.ros_node is None:
             return
-
-        # TransformListener receives its TF callbacks here.
-        rclpy.spin_once(
-            self.ros_node,
-            timeout_sec=0.0,
-        )
 
         if (
             self.latest_plan is None
@@ -960,13 +995,305 @@ class CoveragePlannerGui(QMainWindow):
             self.on_mission_finished
         )
 
+        self.mission_process.started.connect(
+            self.on_mission_started
+        )
+
+        # Start the entire mission in a dedicated Unix session.
+        # This lets us terminate Gazebo + ROS + controller +
+        # logger together instead of leaving orphan processes.
         self.mission_process.start(
-            "/usr/bin/bash",
+            "/usr/bin/setsid",
             [
+                "/usr/bin/bash",
                 str(script_path),
                 "--skip-planner",
             ],
         )
+
+        # -----------------------------------------------------
+        # Wait for the native Gazebo window to appear, then
+        # place it on the left 2/3 of the available screen.
+        # -----------------------------------------------------
+
+        self.gazebo_layout_attempts = 0
+        self.gazebo_window_seen = False
+        self.gazebo_missing_checks = 0
+
+        self.gazebo_layout_timer.start(500)
+
+    def on_mission_started(self):
+        """Remember the mission process-group leader PID."""
+
+        if self.mission_process is None:
+            return
+
+        pid = int(
+            self.mission_process.processId()
+        )
+
+        if pid > 0:
+            self.mission_pgid = pid
+
+            print(
+                "Mission process group started: "
+                f"{self.mission_pgid}"
+            )
+
+    def terminate_mission(self):
+        """Terminate the complete mission process group."""
+
+        self.gazebo_layout_timer.stop()
+        self.gazebo_watch_timer.stop()
+
+        pgid = self.mission_pgid
+
+        if pgid is None:
+            return
+
+        try:
+            os.killpg(
+                pgid,
+                signal.SIGTERM,
+            )
+
+            print(
+                "Stopping complete mission process group: "
+                f"{pgid}"
+            )
+
+        except ProcessLookupError:
+            pass
+
+        except PermissionError as error:
+            print(
+                "Could not stop mission process group: "
+                f"{error}"
+            )
+
+        self.mission_pgid = None
+
+    def gazebo_window_exists(self):
+        """Return True while the native Gazebo window exists."""
+
+        try:
+            output = subprocess.check_output(
+                ["wmctrl", "-lx"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+        ):
+            return False
+
+        for line in output.splitlines():
+            lower = line.lower()
+
+            if (
+                "gz-sim-gui.gazebo gui" in lower
+                and "gazebo sim" in lower
+            ):
+                return True
+
+        return False
+
+    def watch_gazebo_window(self):
+        """Stop the ROS mission when its Gazebo window closes."""
+
+        if not self.gazebo_window_seen:
+            return
+
+        if self.gazebo_window_exists():
+            self.gazebo_missing_checks = 0
+            return
+
+        self.gazebo_missing_checks += 1
+
+        # Require several consecutive misses in case the window
+        # manager briefly fails to report the window.
+        if self.gazebo_missing_checks >= 3:
+            print(
+                "Gazebo closed. Stopping the complete mission."
+            )
+
+            self.terminate_mission()
+
+    def find_x11_window(
+        self,
+        title_text,
+        class_text=None,
+    ):
+        """Return wmctrl window id for a visible XWayland/X11 window."""
+
+        try:
+            output = subprocess.check_output(
+                ["wmctrl", "-lx"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+        ):
+            return None
+
+        for line in output.splitlines():
+
+            lower = line.lower()
+
+            if title_text.lower() not in lower:
+                continue
+
+            if (
+                class_text is not None
+                and class_text.lower() not in lower
+            ):
+                continue
+
+            parts = line.split()
+
+            if parts:
+                return parts[0]
+
+        return None
+
+    def set_x11_window_geometry(
+        self,
+        window_id,
+        x,
+        y,
+        width,
+        height,
+    ):
+        """Move and resize an XWayland/X11 window."""
+
+        if window_id is None:
+            return False
+
+        # Remove maximized state first.
+        subprocess.run(
+            [
+                "wmctrl",
+                "-ir",
+                window_id,
+                "-b",
+                "remove,maximized_vert,maximized_horz",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Move + resize.
+        subprocess.run(
+            [
+                "wmctrl",
+                "-ir",
+                window_id,
+                "-e",
+                (
+                    f"0,"
+                    f"{int(x)},"
+                    f"{int(y)},"
+                    f"{int(width)},"
+                    f"{int(height)}"
+                ),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        return True
+
+    def position_gazebo_window(self):
+        """Tile Gazebo left 2/3 and GUI right 1/3."""
+
+        self.gazebo_layout_attempts += 1
+
+        gazebo_window_id = self.find_x11_window(
+            "Gazebo Sim",
+            "gz-sim-gui",
+        )
+
+        gui_window_id = self.find_x11_window(
+            "VRX Coverage Planner",
+        )
+
+        if (
+            gazebo_window_id is None
+            or gui_window_id is None
+        ):
+            # Give Gazebo up to ~30 seconds to appear.
+            if self.gazebo_layout_attempts >= 60:
+                self.gazebo_layout_timer.stop()
+
+            return
+
+        screen = QApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        geometry = screen.availableGeometry()
+
+        screen_x = geometry.x()
+        screen_y = geometry.y()
+        screen_width = geometry.width()
+        screen_height = geometry.height()
+
+        # Leave enough room for the GUI's real minimum width.
+        #
+        # Screen width: 1920 px
+        # GUI width:     840 px
+        # Safety gap:     30 px
+        # Gazebo:       ~1050 px
+
+        safety_gap = 30
+
+        gui_width = self.gui_target_width
+
+        gazebo_width = (
+            screen_width
+            - gui_width
+            - safety_gap
+        )
+
+        # -----------------------------------------------------
+        # Gazebo only: left side with a small safety gap.
+        #
+        # Do NOT resize the GUI repeatedly while Gazebo starts.
+        # -----------------------------------------------------
+
+        self.set_x11_window_geometry(
+            gazebo_window_id,
+            screen_x,
+            screen_y,
+            gazebo_width,
+            screen_height,
+        )
+
+        self.gazebo_window_seen = True
+        self.gazebo_missing_checks = 0
+
+        # Start lifecycle watcher as soon as Gazebo is found.
+        if not self.gazebo_watch_timer.isActive():
+            self.gazebo_watch_timer.start(1000)
+
+        # Gazebo can resize itself during startup.
+        #
+        # Reapply layout for several seconds instead of
+        # stopping immediately after the first successful move.
+        if self.gazebo_layout_attempts >= 20:
+            self.gazebo_layout_timer.stop()
+
+            print(
+                "Final window layout applied: "
+                f"Gazebo={gazebo_width}x{screen_height}, "
+                "GUI kept at right-third size"
+            )
 
     def read_mission_output(self):
         """Read mission output without blocking the GUI."""
@@ -1008,6 +1335,13 @@ class CoveragePlannerGui(QMainWindow):
     ):
         """Handle mission process termination."""
 
+        self.gazebo_layout_timer.stop()
+        self.gazebo_watch_timer.stop()
+
+        self.gazebo_window_seen = False
+        self.gazebo_missing_checks = 0
+        self.mission_pgid = None
+
         if exit_code == 0:
             self.status_label.setText(
                 "Mission process finished."
@@ -1028,6 +1362,14 @@ class CoveragePlannerGui(QMainWindow):
         if hasattr(self, "ros_timer"):
             self.ros_timer.stop()
 
+        if hasattr(self, "gazebo_layout_timer"):
+            self.gazebo_layout_timer.stop()
+
+        if hasattr(self, "gazebo_watch_timer"):
+            self.gazebo_watch_timer.stop()
+
+        self.terminate_mission()
+
         if getattr(self, "ros_node", None) is not None:
             self.ros_node.destroy_node()
             self.ros_node = None
@@ -1038,6 +1380,7 @@ class CoveragePlannerGui(QMainWindow):
         event.accept()
 
     def position_on_right_third(self):
+        """Keep the GUI at a stable fixed width on the right."""
 
         screen = QApplication.primaryScreen()
 
@@ -1046,31 +1389,58 @@ class CoveragePlannerGui(QMainWindow):
 
         geometry = screen.availableGeometry()
 
-        screen_width = geometry.width()
-        screen_height = geometry.height()
+        gui_width = self.gui_target_width
 
-        gui_width = screen_width // 3
-
-        x = (
+        gui_x = (
             geometry.x()
-            + screen_width
+            + geometry.width()
             - gui_width
         )
 
-        self.setGeometry(
-            x,
-            geometry.y(),
-            gui_width,
-            screen_height,
+        gui_window_id = self.find_x11_window(
+            "VRX Coverage Planner",
         )
+
+        if gui_window_id is not None:
+
+            self.set_x11_window_geometry(
+                gui_window_id,
+                gui_x,
+                geometry.y(),
+                gui_width,
+                geometry.height(),
+            )
+
+        else:
+            self.setGeometry(
+                gui_x,
+                geometry.y(),
+                gui_width,
+                geometry.height(),
+            )
 
 
 def main(args=None):
+
+    # Both this GUI and Gazebo must be controllable through
+    # the same XWayland/X11 window-management path.
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     app = QApplication(sys.argv)
 
     window = CoveragePlannerGui()
     window.show()
+
+    # The native X11 window only exists after show().
+    QTimer.singleShot(
+        300,
+        window.position_on_right_third,
+    )
+
+    QTimer.singleShot(
+        1000,
+        window.position_on_right_third,
+    )
 
     sys.exit(
         app.exec_()
