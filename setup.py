@@ -44,6 +44,7 @@ setup(
             'gps_imu_tf_broadcaster = planner.gps_imu_tf_broadcaster:main',
             'path_frame_transformer = planner.path_frame_transformer:main',
             'coverage_path_live_viewer = planner.coverage_path_live_viewer:main',
+            'trajectory_logger = planner.trajectory_logger:main',
 
         ],
     },
