@@ -1,11 +1,16 @@
 import json
-import math
 import sys
 from pathlib import Path
 
 import numpy as np
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import (
+    QObject,
+    QThread,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -21,12 +26,61 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 
+from planner.sydney_coverage_dubins import (
+    generate_coverage_plan,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
 OCCUPANCY_PATH = DATA_DIR / "sydney_local_occupancy.npy"
 COORDINATES_PATH = DATA_DIR / "sydney_world_coordinates.json"
+
+
+class PlannerWorker(QObject):
+
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        bounds,
+        path_width,
+        turning_radius,
+    ):
+        super().__init__()
+
+        self.bounds = bounds
+        self.path_width = path_width
+        self.turning_radius = turning_radius
+
+    @pyqtSlot()
+    def run(self):
+
+        try:
+            (
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+            ) = self.bounds
+
+            result = generate_coverage_plan(
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                self.path_width,
+                self.turning_radius,
+                show_plot=False,
+                create_plot=False,
+            )
+
+            self.finished.emit(result)
+
+        except Exception as error:
+            self.failed.emit(str(error))
 
 
 class CoveragePlannerGui(QMainWindow):
@@ -38,16 +92,16 @@ class CoveragePlannerGui(QMainWindow):
 
         self.coverage_points = []
 
+        self.planner_thread = None
+        self.planner_worker = None
+        self.latest_plan = None
+
         self.load_map_data()
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
-
-        # -----------------------------------------------------
-        # Status
-        # -----------------------------------------------------
 
         self.status_label = QLabel(
             "Right-click two opposite corners of the coverage area."
@@ -85,10 +139,7 @@ class CoveragePlannerGui(QMainWindow):
         width_label = QLabel("Path width [m]:")
 
         self.path_width_input = QDoubleSpinBox()
-        self.path_width_input.setRange(
-            1.0,
-            200.0,
-        )
+        self.path_width_input.setRange(1.0, 200.0)
         self.path_width_input.setDecimals(1)
         self.path_width_input.setSingleStep(1.0)
         self.path_width_input.setValue(10.0)
@@ -98,10 +149,7 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         self.turning_radius_input = QDoubleSpinBox()
-        self.turning_radius_input.setRange(
-            1.0,
-            200.0,
-        )
+        self.turning_radius_input.setRange(1.0, 200.0)
         self.turning_radius_input.setDecimals(1)
         self.turning_radius_input.setSingleStep(1.0)
         self.turning_radius_input.setValue(10.0)
@@ -118,7 +166,6 @@ class CoveragePlannerGui(QMainWindow):
         parameter_layout.addWidget(
             self.path_width_input
         )
-
         parameter_layout.addWidget(radius_label)
         parameter_layout.addWidget(
             self.turning_radius_input
@@ -137,7 +184,6 @@ class CoveragePlannerGui(QMainWindow):
         self.reset_button = QPushButton(
             "Reset Selection"
         )
-
         self.reset_button.clicked.connect(
             self.reset_selection
         )
@@ -145,17 +191,14 @@ class CoveragePlannerGui(QMainWindow):
         self.generate_button = QPushButton(
             "Generate Path"
         )
-
         self.generate_button.setEnabled(False)
-
         self.generate_button.clicked.connect(
-            self.generate_test_path
+            self.generate_real_path
         )
 
         controls_layout.addWidget(
             self.reset_button
         )
-
         controls_layout.addWidget(
             self.generate_button
         )
@@ -169,26 +212,14 @@ class CoveragePlannerGui(QMainWindow):
         # -----------------------------------------------------
 
         self.bottom_figure = Figure()
-
         self.bottom_canvas = FigureCanvas(
             self.bottom_figure
         )
-
         self.bottom_ax = (
             self.bottom_figure.add_subplot(111)
         )
 
-        self.bottom_ax.set_title(
-            "Final / Live Coverage Path"
-        )
-
-        self.bottom_ax.set_xlabel("East [m]")
-        self.bottom_ax.set_ylabel("North [m]")
-
-        self.bottom_ax.grid(
-            True,
-            alpha=0.25,
-        )
+        self.draw_empty_bottom()
 
         main_layout.addWidget(
             self.bottom_canvas,
@@ -198,7 +229,6 @@ class CoveragePlannerGui(QMainWindow):
         self.position_on_right_third()
 
     def load_map_data(self):
-        """Load Sydney occupancy map and coordinates."""
 
         self.occupancy = np.load(
             OCCUPANCY_PATH
@@ -215,12 +245,9 @@ class CoveragePlannerGui(QMainWindow):
         self.map_y_min = self.coordinates["y_min"]
         self.map_y_max = self.coordinates["y_max"]
 
-    def draw_top_map(self):
-        """Draw map, rectangle and parameter preview."""
+    def draw_map_background(self, ax):
 
-        self.top_ax.clear()
-
-        self.top_ax.imshow(
+        ax.imshow(
             self.occupancy,
             origin="lower",
             extent=[
@@ -236,11 +263,18 @@ class CoveragePlannerGui(QMainWindow):
             aspect="equal",
         )
 
+    def draw_top_map(self):
+
+        self.top_ax.clear()
+
+        self.draw_map_background(
+            self.top_ax
+        )
+
         self.top_ax.set_xlim(
             self.map_x_min,
             self.map_x_max,
         )
-
         self.top_ax.set_ylim(
             self.map_y_min,
             self.map_y_max,
@@ -249,18 +283,11 @@ class CoveragePlannerGui(QMainWindow):
         self.top_ax.set_title(
             "Planning Setup — Sydney Regatta"
         )
-
         self.top_ax.set_xlabel("East [m]")
         self.top_ax.set_ylabel("North [m]")
+        self.top_ax.grid(True, alpha=0.20)
 
-        self.top_ax.grid(
-            True,
-            alpha=0.20,
-        )
-
-        # Selected corners.
         for x, y in self.coverage_points:
-
             self.top_ax.scatter(
                 x,
                 y,
@@ -278,44 +305,28 @@ class CoveragePlannerGui(QMainWindow):
 
             x_min = min(x1, x2)
             x_max = max(x1, x2)
-
             y_min = min(y1, y2)
             y_max = max(y1, y2)
 
-            # ---------------------------------------------
-            # Selected rectangle
-            # ---------------------------------------------
-
-            rectangle_x = [
-                x_min,
-                x_max,
-                x_max,
-                x_min,
-                x_min,
-            ]
-
-            rectangle_y = [
-                y_min,
-                y_min,
-                y_max,
-                y_max,
-                y_min,
-            ]
-
             self.top_ax.plot(
-                rectangle_x,
-                rectangle_y,
+                [
+                    x_min,
+                    x_max,
+                    x_max,
+                    x_min,
+                    x_min,
+                ],
+                [
+                    y_min,
+                    y_min,
+                    y_max,
+                    y_max,
+                    y_min,
+                ],
                 linestyle="--",
                 linewidth=2.0,
                 label="Coverage area",
             )
-
-            # ---------------------------------------------
-            # Path-width preview
-            #
-            # Current planner creates horizontal coverage
-            # rows separated vertically by path_width.
-            # ---------------------------------------------
 
             path_width = (
                 self.path_width_input.value()
@@ -327,7 +338,6 @@ class CoveragePlannerGui(QMainWindow):
             )
 
             preview_y = y_min
-
             first_lane = True
 
             while preview_y <= y_max:
@@ -347,12 +357,7 @@ class CoveragePlannerGui(QMainWindow):
                 )
 
                 first_lane = False
-
                 preview_y += path_width
-
-            # ---------------------------------------------
-            # Turning-radius preview
-            # ---------------------------------------------
 
             turning_radius = (
                 self.turning_radius_input.value()
@@ -366,53 +371,41 @@ class CoveragePlannerGui(QMainWindow):
             circle_center_x = (
                 x_min + turning_radius
             )
-
             circle_center_y = (
                 y_min + turning_radius
             )
 
-            if (
-                circle_center_x + turning_radius
-                <= x_max
-                and circle_center_y + turning_radius
-                <= y_max
-            ):
+            radius_circle = Circle(
+                (
+                    circle_center_x,
+                    circle_center_y,
+                ),
+                turning_radius,
+                fill=False,
+                linewidth=2.5,
+                linestyle="-.",
+                label=(
+                    f"Turning radius = "
+                    f"{turning_radius:.1f} m"
+                ),
+            )
 
-                radius_circle = Circle(
-                    (
-                        circle_center_x,
-                        circle_center_y,
-                    ),
-                    turning_radius,
-                    fill=False,
-                    linewidth=2.0,
-                    linestyle="-.",
-                    label=(
-                        f"Turning radius = "
-                        f"{turning_radius:.1f} m"
-                    ),
-                )
+            self.top_ax.add_patch(
+                radius_circle
+            )
 
-                self.top_ax.add_patch(
-                    radius_circle
-                )
-
-                self.top_ax.plot(
-                    [
-                        circle_center_x,
-                        circle_center_x
-                        + turning_radius,
-                    ],
-                    [
-                        circle_center_y,
-                        circle_center_y,
-                    ],
-                    linewidth=1.5,
-                )
-
-            # ---------------------------------------------
-            # Parameter text
-            # ---------------------------------------------
+            self.top_ax.plot(
+                [
+                    circle_center_x,
+                    circle_center_x
+                    + turning_radius,
+                ],
+                [
+                    circle_center_y,
+                    circle_center_y,
+                ],
+                linewidth=2.0,
+            )
 
             self.top_ax.text(
                 0.02,
@@ -439,8 +432,23 @@ class CoveragePlannerGui(QMainWindow):
 
         self.top_canvas.draw_idle()
 
+    def draw_empty_bottom(self):
+
+        self.bottom_ax.clear()
+
+        self.bottom_ax.set_title(
+            "Final / Live Coverage Path"
+        )
+        self.bottom_ax.set_xlabel("East [m]")
+        self.bottom_ax.set_ylabel("North [m]")
+        self.bottom_ax.grid(
+            True,
+            alpha=0.25,
+        )
+
+        self.bottom_canvas.draw_idle()
+
     def on_top_click(self, event):
-        """Handle right-click coverage selection."""
 
         if event.button != 3:
             return
@@ -471,11 +479,11 @@ class CoveragePlannerGui(QMainWindow):
                 "Right-click the opposite corner."
             )
 
-        elif len(self.coverage_points) == 2:
+        else:
 
             self.status_label.setText(
                 "Coverage rectangle selected. "
-                "Adjust path width and turning radius."
+                "Adjust parameters or generate the path."
             )
 
             self.generate_button.setEnabled(
@@ -485,7 +493,6 @@ class CoveragePlannerGui(QMainWindow):
         self.draw_top_map()
 
     def on_parameter_changed(self):
-        """Refresh parameter preview."""
 
         if len(self.coverage_points) == 2:
 
@@ -496,26 +503,270 @@ class CoveragePlannerGui(QMainWindow):
                 "Press Generate Path when ready."
             )
 
-    def reset_selection(self):
-        """Clear selected coverage area."""
+    def get_bounds(self):
 
-        self.coverage_points.clear()
+        x1, y1 = self.coverage_points[0]
+        x2, y2 = self.coverage_points[1]
 
-        self.generate_button.setEnabled(
-            False
+        return (
+            min(x1, x2),
+            max(x1, x2),
+            min(y1, y2),
+            max(y1, y2),
+        )
+
+    def generate_real_path(self):
+
+        if len(self.coverage_points) != 2:
+            return
+
+        self.generate_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self.path_width_input.setEnabled(False)
+        self.turning_radius_input.setEnabled(False)
+
+        self.status_label.setText(
+            "Generating safe Dubins coverage path..."
+        )
+
+        self.planner_thread = QThread()
+
+        self.planner_worker = PlannerWorker(
+            self.get_bounds(),
+            self.path_width_input.value(),
+            self.turning_radius_input.value(),
+        )
+
+        self.planner_worker.moveToThread(
+            self.planner_thread
+        )
+
+        self.planner_thread.started.connect(
+            self.planner_worker.run
+        )
+
+        self.planner_worker.finished.connect(
+            self.on_plan_finished
+        )
+
+        self.planner_worker.failed.connect(
+            self.on_plan_failed
+        )
+
+        self.planner_worker.finished.connect(
+            self.planner_thread.quit
+        )
+
+        self.planner_worker.failed.connect(
+            self.planner_thread.quit
+        )
+
+        self.planner_worker.finished.connect(
+            self.planner_worker.deleteLater
+        )
+
+        self.planner_worker.failed.connect(
+            self.planner_worker.deleteLater
+        )
+
+        self.planner_thread.finished.connect(
+            self.planner_thread.deleteLater
+        )
+
+        self.planner_thread.start()
+
+    @pyqtSlot(object)
+    def on_plan_finished(self, result):
+
+        self.latest_plan = result
+
+        self.draw_plan_result(
+            result
         )
 
         self.status_label.setText(
-            "Right-click two opposite corners "
-            "of the coverage area."
+            "Path generated successfully. "
+            f"{len(result['world_path'])} waypoints, "
+            f"{result['total_distance']:.1f} m."
         )
 
-        self.draw_top_map()
+        self.restore_controls()
+
+    @pyqtSlot(str)
+    def on_plan_failed(self, message):
+
+        self.status_label.setText(
+            f"Planner error: {message}"
+        )
+
+        self.restore_controls()
+
+    def restore_controls(self):
+
+        self.generate_button.setEnabled(
+            len(self.coverage_points) == 2
+        )
+
+        self.reset_button.setEnabled(True)
+        self.path_width_input.setEnabled(True)
+        self.turning_radius_input.setEnabled(True)
+
+    def draw_plan_result(self, result):
 
         self.bottom_ax.clear()
 
+        self.draw_map_background(
+            self.bottom_ax
+        )
+
+        (
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+        ) = result["coverage_bounds"]
+
+        self.bottom_ax.plot(
+            [
+                x_min,
+                x_max,
+                x_max,
+                x_min,
+                x_min,
+            ],
+            [
+                y_min,
+                y_min,
+                y_max,
+                y_max,
+                y_min,
+            ],
+            linestyle="--",
+            linewidth=2.0,
+            label="Coverage area",
+        )
+
+        component_mask = result[
+            "component_mask"
+        ]
+
+        self.bottom_ax.contour(
+            component_mask.astype(float),
+            levels=[0.5],
+            origin="lower",
+            extent=[
+                self.map_x_min,
+                self.map_x_max,
+                self.map_y_min,
+                self.map_y_max,
+            ],
+            linewidths=2.0,
+        )
+
+        for index, line in enumerate(
+            result["coverage_lines"]
+        ):
+
+            self.bottom_ax.plot(
+                line[:, 0],
+                line[:, 1],
+                linewidth=0.8,
+                alpha=0.7,
+                label=(
+                    "Coverage lines"
+                    if index == 0
+                    else None
+                ),
+            )
+
+        for index, transition in enumerate(
+            result["dubins_transitions"]
+        ):
+
+            self.bottom_ax.plot(
+                transition[:, 0],
+                transition[:, 1],
+                linewidth=2.0,
+                label=(
+                    "Dubins transitions"
+                    if index == 0
+                    else None
+                ),
+            )
+
+        for index, transition in enumerate(
+            result["astar_transitions"]
+        ):
+
+            self.bottom_ax.plot(
+                transition[:, 0],
+                transition[:, 1],
+                linewidth=1.5,
+                label=(
+                    "A* fallback"
+                    if index == 0
+                    else None
+                ),
+            )
+
+        world_path = result[
+            "world_path"
+        ]
+
+        self.bottom_ax.plot(
+            world_path[:, 0],
+            world_path[:, 1],
+            linewidth=1.0,
+            label="Final trajectory",
+        )
+
+        start = world_path[0]
+        end = world_path[-1]
+
+        self.bottom_ax.scatter(
+            start[0],
+            start[1],
+            marker="o",
+            s=70,
+            zorder=20,
+            label="Start",
+        )
+
+        self.bottom_ax.scatter(
+            end[0],
+            end[1],
+            marker="X",
+            s=90,
+            zorder=20,
+            label="End",
+        )
+
+        padding = 25.0
+
+        self.bottom_ax.set_xlim(
+            max(
+                self.map_x_min,
+                x_min - padding,
+            ),
+            min(
+                self.map_x_max,
+                x_max + padding,
+            ),
+        )
+
+        self.bottom_ax.set_ylim(
+            max(
+                self.map_y_min,
+                y_min - padding,
+            ),
+            min(
+                self.map_y_max,
+                y_max + padding,
+            ),
+        )
+
         self.bottom_ax.set_title(
-            "Final / Live Coverage Path"
+            "Generated Dubins Coverage Path"
         )
 
         self.bottom_ax.set_xlabel(
@@ -531,10 +782,59 @@ class CoveragePlannerGui(QMainWindow):
             alpha=0.25,
         )
 
+        self.bottom_ax.legend(
+            loc="best",
+            fontsize=7,
+        )
+
+        self.bottom_ax.text(
+            0.02,
+            0.98,
+            (
+                f"Path width: "
+                f"{result['path_width']:.1f} m\n"
+                f"Turning radius: "
+                f"{result['turning_radius']:.1f} m\n"
+                f"Distance: "
+                f"{result['total_distance']:.1f} m\n"
+                f"Waypoints: "
+                f"{len(world_path)}"
+            ),
+            transform=self.bottom_ax.transAxes,
+            verticalalignment="top",
+            bbox={
+                "boxstyle": "round",
+                "facecolor": "white",
+                "alpha": 0.85,
+            },
+        )
+
         self.bottom_canvas.draw_idle()
 
+    def reset_selection(self):
+
+        if (
+            self.planner_thread is not None
+            and self.planner_thread.isRunning()
+        ):
+            return
+
+        self.coverage_points.clear()
+        self.latest_plan = None
+
+        self.generate_button.setEnabled(
+            False
+        )
+
+        self.status_label.setText(
+            "Right-click two opposite corners "
+            "of the coverage area."
+        )
+
+        self.draw_top_map()
+        self.draw_empty_bottom()
+
     def position_on_right_third(self):
-        """Place GUI on right third of screen."""
 
         screen = QApplication.primaryScreen()
 
@@ -554,100 +854,11 @@ class CoveragePlannerGui(QMainWindow):
             - gui_width
         )
 
-        y = geometry.y()
-
         self.setGeometry(
             x,
-            y,
+            geometry.y(),
             gui_width,
             screen_height,
-        )
-
-    def generate_test_path(self):
-        """Temporary generation test."""
-
-        if len(self.coverage_points) != 2:
-            return
-
-        x1, y1 = self.coverage_points[0]
-        x2, y2 = self.coverage_points[1]
-
-        x_min = min(x1, x2)
-        x_max = max(x1, x2)
-
-        y_min = min(y1, y2)
-        y_max = max(y1, y2)
-
-        path_width = (
-            self.path_width_input.value()
-        )
-
-        self.bottom_ax.clear()
-
-        direction_right = True
-        current_y = y_min
-
-        test_x = []
-        test_y = []
-
-        while current_y <= y_max:
-
-            if direction_right:
-                test_x.extend(
-                    [x_min, x_max]
-                )
-            else:
-                test_x.extend(
-                    [x_max, x_min]
-                )
-
-            test_y.extend(
-                [current_y, current_y]
-            )
-
-            current_y += path_width
-            direction_right = (
-                not direction_right
-            )
-
-        self.bottom_ax.plot(
-            test_x,
-            test_y,
-            linewidth=1.5,
-        )
-
-        self.bottom_ax.set_xlim(
-            x_min - 20,
-            x_max + 20,
-        )
-
-        self.bottom_ax.set_ylim(
-            y_min - 20,
-            y_max + 20,
-        )
-
-        self.bottom_ax.set_title(
-            "Coverage Preview — Test Only"
-        )
-
-        self.bottom_ax.set_xlabel(
-            "East [m]"
-        )
-
-        self.bottom_ax.set_ylabel(
-            "North [m]"
-        )
-
-        self.bottom_ax.grid(
-            True,
-            alpha=0.25,
-        )
-
-        self.bottom_canvas.draw_idle()
-
-        self.status_label.setText(
-            "Test coverage generated. "
-            "Real Dubins planner not connected yet."
         )
 
 
@@ -656,7 +867,6 @@ def main(args=None):
     app = QApplication(sys.argv)
 
     window = CoveragePlannerGui()
-
     window.show()
 
     sys.exit(
@@ -665,5 +875,4 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-
     main()

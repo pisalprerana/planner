@@ -525,6 +525,7 @@ def generate_coverage_plan(
     path_width,
     turning_radius,
     show_plot=False,
+    create_plot=True,
 ):
     """Generate a safe Dubins coverage path for a selected area."""
 
@@ -1947,80 +1948,17 @@ def generate_coverage_plan(
     print("Last waypoint:", world_path[-1])
 
 
-    # ============================================================
-    # PLOT
-    # ============================================================
+    if create_plot:
+        # ============================================================
+        # PLOT
+        # ============================================================
 
-    fig, ax = plt.subplots(
-        figsize=(14, 9)
-    )
-
-    ax.imshow(
-        occupancy,
-        origin="lower",
-        extent=[
-            map_x_min,
-            map_x_max,
-            map_y_min,
-            map_y_max,
-        ],
-        cmap="binary",
-        interpolation="nearest",
-        vmin=0,
-        vmax=1,
-        aspect="equal",
-    )
-
-
-    # ------------------------------------------------------------
-    # Selected search window
-    # ------------------------------------------------------------
-
-    rectangle_x = [
-        coverage_x_min,
-        coverage_x_max,
-        coverage_x_max,
-        coverage_x_min,
-        coverage_x_min,
-    ]
-
-    rectangle_y = [
-        coverage_y_min,
-        coverage_y_min,
-        coverage_y_max,
-        coverage_y_max,
-        coverage_y_min,
-    ]
-
-    ax.plot(
-        rectangle_x,
-        rectangle_y,
-        linestyle="--",
-        linewidth=2,
-        label="Coverage search window",
-    )
-
-
-    # ------------------------------------------------------------
-    # Safe-water boundary
-    # ------------------------------------------------------------
-
-    safe_rows, safe_cols = np.where(
-        component_mask
-    )
-
-    if len(safe_rows) > 0:
-
-        safe_x, safe_y = grid_to_world(
-            safe_rows[0],
-            safe_cols[0],
+        fig, ax = plt.subplots(
+            figsize=(14, 9)
         )
 
-        # Draw the safe-water boundary with a contour.
-        # Contour is based on the actual safe-water mask.
-        ax.contour(
-            component_mask.astype(float),
-            levels=[0.5],
+        ax.imshow(
+            occupancy,
             origin="lower",
             extent=[
                 map_x_min,
@@ -2028,249 +1966,313 @@ def generate_coverage_plan(
                 map_y_min,
                 map_y_max,
             ],
-            colors=["tab:green"],
-            linewidths=SAFE_BOUNDARY_LINE_WIDTH,
-            alpha=0.95,
+            cmap="binary",
+            interpolation="nearest",
+            vmin=0,
+            vmax=1,
+            aspect="equal",
         )
 
 
-    # ------------------------------------------------------------
-    # Coverage lines
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Selected search window
+        # ------------------------------------------------------------
 
-    for i, line in enumerate(coverage_lines_world):
+        rectangle_x = [
+            coverage_x_min,
+            coverage_x_max,
+            coverage_x_max,
+            coverage_x_min,
+            coverage_x_min,
+        ]
+
+        rectangle_y = [
+            coverage_y_min,
+            coverage_y_min,
+            coverage_y_max,
+            coverage_y_max,
+            coverage_y_min,
+        ]
 
         ax.plot(
-            line[:, 0],
-            line[:, 1],
-            color="tab:blue",
-            linewidth=0.65,
-            alpha=0.75,
-            label=(
-                "Water coverage lines"
-                if i == 0
-                else None
-            ),
+            rectangle_x,
+            rectangle_y,
+            linestyle="--",
+            linewidth=2,
+            label="Coverage search window",
         )
 
 
-    # ------------------------------------------------------------
-    # Dubins transitions
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Safe-water boundary
+        # ------------------------------------------------------------
 
-    for i, transition in enumerate(dubins_transitions):
+        safe_rows, safe_cols = np.where(
+            component_mask
+        )
+
+        if len(safe_rows) > 0:
+
+            safe_x, safe_y = grid_to_world(
+                safe_rows[0],
+                safe_cols[0],
+            )
+
+            # Draw the safe-water boundary with a contour.
+            # Contour is based on the actual safe-water mask.
+            ax.contour(
+                component_mask.astype(float),
+                levels=[0.5],
+                origin="lower",
+                extent=[
+                    map_x_min,
+                    map_x_max,
+                    map_y_min,
+                    map_y_max,
+                ],
+                colors=["tab:green"],
+                linewidths=SAFE_BOUNDARY_LINE_WIDTH,
+                alpha=0.95,
+            )
+
+
+        # ------------------------------------------------------------
+        # Coverage lines
+        # ------------------------------------------------------------
+
+        for i, line in enumerate(coverage_lines_world):
+
+            ax.plot(
+                line[:, 0],
+                line[:, 1],
+                color="tab:blue",
+                linewidth=0.65,
+                alpha=0.75,
+                label=(
+                    "Water coverage lines"
+                    if i == 0
+                    else None
+                ),
+            )
+
+
+        # ------------------------------------------------------------
+        # Dubins transitions
+        # ------------------------------------------------------------
+
+        for i, transition in enumerate(dubins_transitions):
+
+            ax.plot(
+                transition[:, 0],
+                transition[:, 1],
+                color="tab:orange",
+                linewidth=DUBINS_LINE_WIDTH,
+                alpha=0.95,
+                label=(
+                    "Dubins transitions"
+                    if i == 0
+                    else None
+                ),
+            )
+
+
+        # ------------------------------------------------------------
+        # A* last-resort transitions
+        # ------------------------------------------------------------
+
+        for i, transition in enumerate(astar_transitions):
+
+            ax.plot(
+                transition[:, 0],
+                transition[:, 1],
+                color="tab:red",
+                linewidth=ASTAR_LINE_WIDTH,
+                alpha=0.9,
+                label=(
+                    "A* last-resort connectors"
+                    if i == 0
+                    else None
+                ),
+            )
+
+
+        # ------------------------------------------------------------
+        # Final trajectory
+        # ------------------------------------------------------------
 
         ax.plot(
-            transition[:, 0],
-            transition[:, 1],
-            color="tab:orange",
-            linewidth=DUBINS_LINE_WIDTH,
-            alpha=0.95,
-            label=(
-                "Dubins transitions"
-                if i == 0
-                else None
-            ),
+            world_path[:, 0],
+            world_path[:, 1],
+            color="black",
+            linewidth=TRAJECTORY_LINE_WIDTH,
+            alpha=0.85,
+            label="Final trajectory",
         )
 
 
-    # ------------------------------------------------------------
-    # A* last-resort transitions
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Start / end markers
+        # ------------------------------------------------------------
 
-    for i, transition in enumerate(astar_transitions):
+        start = world_path[0]
+        goal = world_path[-1]
 
-        ax.plot(
-            transition[:, 0],
-            transition[:, 1],
+        ax.scatter(
+            start[0],
+            start[1],
+            s=150,
+            marker="o",
+            color="tab:green",
+            edgecolors="black",
+            linewidths=1.5,
+            zorder=20,
+            label="Trajectory start",
+        )
+
+        ax.scatter(
+            goal[0],
+            goal[1],
+            s=180,
+            marker="X",
             color="tab:red",
-            linewidth=ASTAR_LINE_WIDTH,
-            alpha=0.9,
-            label=(
-                "A* last-resort connectors"
-                if i == 0
-                else None
+            edgecolors="black",
+            linewidths=1.5,
+            zorder=20,
+            label="Trajectory end",
+        )
+
+        ax.annotate(
+            "START",
+            xy=(start[0], start[1]),
+            xytext=(10, 10),
+            textcoords="offset points",
+            fontsize=11,
+            fontweight="bold",
+            color="tab:green",
+            bbox=dict(
+                boxstyle="round,pad=0.25",
+                fc="white",
+                ec="tab:green",
+                alpha=0.9,
             ),
+            zorder=21,
+        )
+
+        ax.annotate(
+            "END",
+            xy=(goal[0], goal[1]),
+            xytext=(10, -20),
+            textcoords="offset points",
+            fontsize=11,
+            fontweight="bold",
+            color="tab:red",
+            bbox=dict(
+                boxstyle="round,pad=0.25",
+                fc="white",
+                ec="tab:red",
+                alpha=0.9,
+            ),
+            zorder=21,
         )
 
 
-    # ------------------------------------------------------------
-    # Final trajectory
-    # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Plot limits with padding
+        # ------------------------------------------------------------
 
-    ax.plot(
-        world_path[:, 0],
-        world_path[:, 1],
-        color="black",
-        linewidth=TRAJECTORY_LINE_WIDTH,
-        alpha=0.85,
-        label="Final trajectory",
-    )
+        plot_x_min = max(
+            map_x_min,
+            coverage_x_min - PLOT_PADDING_METERS,
+        )
 
+        plot_x_max = min(
+            map_x_max,
+            coverage_x_max + PLOT_PADDING_METERS,
+        )
 
-    # ------------------------------------------------------------
-    # Start / end markers
-    # ------------------------------------------------------------
+        plot_y_min = max(
+            map_y_min,
+            coverage_y_min - PLOT_PADDING_METERS,
+        )
 
-    start = world_path[0]
-    goal = world_path[-1]
+        plot_y_max = min(
+            map_y_max,
+            coverage_y_max + PLOT_PADDING_METERS,
+        )
 
-    ax.scatter(
-        start[0],
-        start[1],
-        s=150,
-        marker="o",
-        color="tab:green",
-        edgecolors="black",
-        linewidths=1.5,
-        zorder=20,
-        label="Trajectory start",
-    )
+        # Include trajectory if it extends outside the selected rectangle.
+        plot_x_min = max(
+            map_x_min,
+            min(
+                plot_x_min,
+                float(np.min(world_path[:, 0])) - 10.0,
+            ),
+        )
 
-    ax.scatter(
-        goal[0],
-        goal[1],
-        s=180,
-        marker="X",
-        color="tab:red",
-        edgecolors="black",
-        linewidths=1.5,
-        zorder=20,
-        label="Trajectory end",
-    )
+        plot_x_max = min(
+            map_x_max,
+            max(
+                plot_x_max,
+                float(np.max(world_path[:, 0])) + 10.0,
+            ),
+        )
 
-    ax.annotate(
-        "START",
-        xy=(start[0], start[1]),
-        xytext=(10, 10),
-        textcoords="offset points",
-        fontsize=11,
-        fontweight="bold",
-        color="tab:green",
-        bbox=dict(
-            boxstyle="round,pad=0.25",
-            fc="white",
-            ec="tab:green",
-            alpha=0.9,
-        ),
-        zorder=21,
-    )
+        plot_y_min = max(
+            map_y_min,
+            min(
+                plot_y_min,
+                float(np.min(world_path[:, 1])) - 10.0,
+            ),
+        )
 
-    ax.annotate(
-        "END",
-        xy=(goal[0], goal[1]),
-        xytext=(10, -20),
-        textcoords="offset points",
-        fontsize=11,
-        fontweight="bold",
-        color="tab:red",
-        bbox=dict(
-            boxstyle="round,pad=0.25",
-            fc="white",
-            ec="tab:red",
-            alpha=0.9,
-        ),
-        zorder=21,
-    )
+        plot_y_max = min(
+            map_y_max,
+            max(
+                plot_y_max,
+                float(np.max(world_path[:, 1])) + 10.0,
+            ),
+        )
 
-
-    # ------------------------------------------------------------
-    # Plot limits with padding
-    # ------------------------------------------------------------
-
-    plot_x_min = max(
-        map_x_min,
-        coverage_x_min - PLOT_PADDING_METERS,
-    )
-
-    plot_x_max = min(
-        map_x_max,
-        coverage_x_max + PLOT_PADDING_METERS,
-    )
-
-    plot_y_min = max(
-        map_y_min,
-        coverage_y_min - PLOT_PADDING_METERS,
-    )
-
-    plot_y_max = min(
-        map_y_max,
-        coverage_y_max + PLOT_PADDING_METERS,
-    )
-
-    # Include trajectory if it extends outside the selected rectangle.
-    plot_x_min = max(
-        map_x_min,
-        min(
+        ax.set_xlim(
             plot_x_min,
-            float(np.min(world_path[:, 0])) - 10.0,
-        ),
-    )
-
-    plot_x_max = min(
-        map_x_max,
-        max(
             plot_x_max,
-            float(np.max(world_path[:, 0])) + 10.0,
-        ),
-    )
+        )
 
-    plot_y_min = max(
-        map_y_min,
-        min(
+        ax.set_ylim(
             plot_y_min,
-            float(np.min(world_path[:, 1])) - 10.0,
-        ),
-    )
-
-    plot_y_max = min(
-        map_y_max,
-        max(
             plot_y_max,
-            float(np.max(world_path[:, 1])) + 10.0,
-        ),
-    )
+        )
 
-    ax.set_xlim(
-        plot_x_min,
-        plot_x_max,
-    )
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
 
-    ax.set_ylim(
-        plot_y_min,
-        plot_y_max,
-    )
+        ax.set_title(
+            "Sydney Regatta — Safe-Water Dubins Coverage"
+        )
 
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
+        ax.grid(
+            True,
+            alpha=0.25,
+        )
 
-    ax.set_title(
-        "Sydney Regatta — Safe-Water Dubins Coverage"
-    )
+        ax.legend(
+            loc="best",
+        )
 
-    ax.grid(
-        True,
-        alpha=0.25,
-    )
+        plt.tight_layout()
 
-    ax.legend(
-        loc="best",
-    )
+        plt.savefig(
+            path_png,
+            dpi=200,
+            bbox_inches="tight",
+        )
 
-    plt.tight_layout()
+        print("PNG:", path_png)
 
-    plt.savefig(
-        path_png,
-        dpi=200,
-        bbox_inches="tight",
-    )
-
-    print("PNG:", path_png)
-
-    if show_plot:
-        plt.show()
-    else:
-        plt.close(fig)
+        if show_plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
     return {
         "world_path": world_path,
