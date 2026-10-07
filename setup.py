@@ -22,6 +22,13 @@ setup(
             glob('launch/*.launch.py'),
         ),
         (
+            os.path.join('share', package_name, 'data'),
+            (
+                glob('planner/data/*.npy')
+                + glob('planner/data/*.json')
+            ),
+        ),
+        (
             os.path.join('share', package_name, 'output'),
             glob('planner/output/*.csv'),
         ),
@@ -45,6 +52,7 @@ setup(
             'path_frame_transformer = planner.path_frame_transformer:main',
             'coverage_path_live_viewer = planner.coverage_path_live_viewer:main',
             'trajectory_logger = planner.trajectory_logger:main',
+            'coverage_planner_gui = planner.coverage_planner_gui:main',
 
         ],
     },
