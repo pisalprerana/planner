@@ -853,7 +853,7 @@ class CoveragePlannerGui(QMainWindow):
                 tracker["trail_x"],
                 tracker["trail_y"],
                 linewidth=1.8,
-                label=f"{vehicle_name} trail",
+                label="_nolegend_",
             )
 
             dot_artist, = self.bottom_ax.plot(
@@ -901,17 +901,21 @@ class CoveragePlannerGui(QMainWindow):
         self.bottom_ax.set_title(
             "Sydney Regatta — Three-Vehicle Live Tracking"
         )
-
         self.bottom_ax.grid(
             True,
             alpha=0.25,
         )
 
         self.bottom_ax.legend(
-            loc="upper right",
-            bbox_to_anchor=(0.99, 1.57),
+            loc="lower center",
+            bbox_to_anchor=(0.59, 1.66),
             borderaxespad=0.0,
-            fontsize=7,
+            borderpad=0.8,
+            fontsize=8,
+            ncol=4,
+            columnspacing=1.8,
+            handletextpad=0.6,
+            frameon=True,
         )
 
         self.bottom_ax.set_aspect(
@@ -932,7 +936,7 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         self.bottom_figure.subplots_adjust(
-            top=0.52
+            top=0.46
         )
 
         self.bottom_canvas.draw_idle()
