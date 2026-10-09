@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import csv
+import math
 import os
-from datetime import datetime
 
 import rclpy
 from rclpy.node import Node
@@ -28,9 +28,11 @@ class TrajectoryLogger(Node):
             'output_file'
         ).get_parameter_value().string_value
 
-        sample_rate = self.get_parameter(
+        sample_rate = float(self.get_parameter(
             'sample_rate'
-        ).get_parameter_value().double_value
+        ).value)
+        if not math.isfinite(sample_rate) or sample_rate <= 0.0:
+            raise ValueError('sample_rate must be a finite value greater than zero.')
 
         # ---------------------------------------------------------
         # Create output directory
@@ -45,12 +47,15 @@ class TrajectoryLogger(Node):
         # Data storage
         # ---------------------------------------------------------
 
-        self.vehicle_state = None
+        self.r1_state = None
+        self.r2_state = None
+        self.r3_state = None
         self.reference_path = None
-        self.left_thrust = 0.0
-        self.right_thrust = 0.0
-
+        self.r2_path_gap = None
+        self.r3_path_gap = None
         self.start_time = self.get_clock().now()
+        self.waiting_for_states_logged = False
+        self.waiting_for_path_logged = False
 
         # ---------------------------------------------------------
         # Subscribers
@@ -58,8 +63,22 @@ class TrajectoryLogger(Node):
 
         self.create_subscription(
             VehicleState,
-            '/wamv/state/vehicle',
-            self.vehicle_state_callback,
+            '/r1/vehicle_state',
+            self.r1_state_callback,
+            10
+        )
+
+        self.create_subscription(
+            VehicleState,
+            '/r2/vehicle_state',
+            self.r2_state_callback,
+            10
+        )
+
+        self.create_subscription(
+            VehicleState,
+            '/r3/vehicle_state',
+            self.r3_state_callback,
             10
         )
 
@@ -72,15 +91,15 @@ class TrajectoryLogger(Node):
 
         self.create_subscription(
             Float64,
-            '/wamv/thrusters/left/thrust',
-            self.left_thrust_callback,
+            '/planner/r2/path_gap',
+            self.r2_path_gap_callback,
             10
         )
 
         self.create_subscription(
             Float64,
-            '/wamv/thrusters/right/thrust',
-            self.right_thrust_callback,
+            '/planner/r3/path_gap',
+            self.r3_path_gap_callback,
             10
         )
 
@@ -98,17 +117,29 @@ class TrajectoryLogger(Node):
 
         self.writer.writerow([
             'time_s',
-            'x_m',
-            'y_m',
-            'vx_mps',
-            'vy_mps',
-            'speed_mps',
-            'course_angle_rad',
-            'body_yaw_rad',
+            'r1_x_m',
+            'r1_y_m',
+            'r1_speed_mps',
+            'r1_yaw_rad',
+            'r2_x_m',
+            'r2_y_m',
+            'r2_speed_mps',
+            'r2_yaw_rad',
+            'r3_x_m',
+            'r3_y_m',
+            'r3_speed_mps',
+            'r3_yaw_rad',
             'reference_x_m',
             'reference_y_m',
-            'left_thrust',
-            'right_thrust'
+            'leader_tracking_error_m',
+            'd12_euclidean_m',
+            'd23_euclidean_m',
+            'e12_euclidean_m',
+            'e23_euclidean_m',
+            'r2_path_gap_m',
+            'r3_path_gap_m',
+            'r2_path_gap_error_m',
+            'r3_path_gap_error_m',
         ])
 
         self.csv_file.flush()
@@ -125,28 +156,48 @@ class TrajectoryLogger(Node):
         )
 
         self.get_logger().info(
-            f'Trajectory logger started.'
+            'Three-boat trajectory logger started.'
         )
 
         self.get_logger().info(
-            f'Logging data to: {output_file}'
+            f'CSV output: {output_file}'
         )
+
+        self.get_logger().info(
+            f'Sample rate: {sample_rate:g} Hz'
+        )
+
+        self.get_logger().info(
+            'Waiting for R1, R2, and R3 vehicle states.'
+        )
+        self.waiting_for_states_logged = True
+
+        self.get_logger().info(
+            'Waiting for a non-empty /planner/reference_path.'
+        )
+        self.waiting_for_path_logged = True
 
     # =============================================================
     # Callbacks
     # =============================================================
 
-    def vehicle_state_callback(self, msg):
-        self.vehicle_state = msg
+    def r1_state_callback(self, msg):
+        self.r1_state = msg
+
+    def r2_state_callback(self, msg):
+        self.r2_state = msg
+
+    def r3_state_callback(self, msg):
+        self.r3_state = msg
 
     def reference_path_callback(self, msg):
         self.reference_path = msg
 
-    def left_thrust_callback(self, msg):
-        self.left_thrust = msg.data
+    def r2_path_gap_callback(self, msg):
+        self.r2_path_gap = float(msg.data)
 
-    def right_thrust_callback(self, msg):
-        self.right_thrust = msg.data
+    def r3_path_gap_callback(self, msg):
+        self.r3_path_gap = float(msg.data)
 
     # =============================================================
     # Find closest reference point
@@ -154,7 +205,7 @@ class TrajectoryLogger(Node):
 
     def get_reference_position(self):
 
-        if self.vehicle_state is None:
+        if self.r1_state is None:
             return None, None
 
         if self.reference_path is None:
@@ -163,8 +214,8 @@ class TrajectoryLogger(Node):
         if len(self.reference_path.poses) == 0:
             return None, None
 
-        current_x = self.vehicle_state.x
-        current_y = self.vehicle_state.y
+        current_x = self.r1_state.x
+        current_y = self.r1_state.y
 
         closest_pose = None
         closest_distance = float('inf')
@@ -197,13 +248,78 @@ class TrajectoryLogger(Node):
 
     def log_data(self):
 
-        if self.vehicle_state is None:
+        if any(
+            state is None
+            for state in (
+                self.r1_state,
+                self.r2_state,
+                self.r3_state,
+            )
+        ):
+            if not self.waiting_for_states_logged:
+                self.get_logger().info(
+                    'Waiting for R1, R2, and R3 vehicle states.'
+                )
+                self.waiting_for_states_logged = True
             return
+
+        self.waiting_for_states_logged = False
+
+        if (
+            self.reference_path is None
+            or not self.reference_path.poses
+        ):
+            if not self.waiting_for_path_logged:
+                self.get_logger().info(
+                    'Waiting for a non-empty /planner/reference_path.'
+                )
+                self.waiting_for_path_logged = True
+            return
+
+        self.waiting_for_path_logged = False
 
         reference_x, reference_y = self.get_reference_position()
 
         if reference_x is None:
             return
+
+        r1_x = float(self.r1_state.x)
+        r1_y = float(self.r1_state.y)
+        r2_x = float(self.r2_state.x)
+        r2_y = float(self.r2_state.y)
+        r3_x = float(self.r3_state.x)
+        r3_y = float(self.r3_state.y)
+
+        leader_tracking_error = math.hypot(
+            r1_x - reference_x,
+            r1_y - reference_y,
+        )
+        d12 = math.hypot(r2_x - r1_x, r2_y - r1_y)
+        d23 = math.hypot(r3_x - r2_x, r3_y - r2_y)
+        desired_distance = 5.0
+        e12 = d12 - desired_distance
+        e23 = d23 - desired_distance
+
+        r2_path_gap = (
+            float(self.r2_path_gap)
+            if self.r2_path_gap is not None
+            else float('nan')
+        )
+        r3_path_gap = (
+            float(self.r3_path_gap)
+            if self.r3_path_gap is not None
+            else float('nan')
+        )
+        r2_path_gap_error = (
+            r2_path_gap - desired_distance
+            if math.isfinite(r2_path_gap)
+            else float('nan')
+        )
+        r3_path_gap_error = (
+            r3_path_gap - desired_distance
+            if math.isfinite(r3_path_gap)
+            else float('nan')
+        )
 
         now = self.get_clock().now()
 
@@ -213,23 +329,29 @@ class TrajectoryLogger(Node):
 
         self.writer.writerow([
             f'{time_s:.3f}',
-
-            f'{self.vehicle_state.x:.6f}',
-            f'{self.vehicle_state.y:.6f}',
-
-            f'{self.vehicle_state.vx:.6f}',
-            f'{self.vehicle_state.vy:.6f}',
-
-            f'{self.vehicle_state.speed:.6f}',
-
-            f'{self.vehicle_state.course_angle:.6f}',
-            f'{self.vehicle_state.body_yaw:.6f}',
-
+            f'{r1_x:.6f}',
+            f'{r1_y:.6f}',
+            f'{self.r1_state.speed:.6f}',
+            f'{self.r1_state.body_yaw:.6f}',
+            f'{r2_x:.6f}',
+            f'{r2_y:.6f}',
+            f'{self.r2_state.speed:.6f}',
+            f'{self.r2_state.body_yaw:.6f}',
+            f'{r3_x:.6f}',
+            f'{r3_y:.6f}',
+            f'{self.r3_state.speed:.6f}',
+            f'{self.r3_state.body_yaw:.6f}',
             f'{reference_x:.6f}',
             f'{reference_y:.6f}',
-
-            f'{self.left_thrust:.6f}',
-            f'{self.right_thrust:.6f}'
+            f'{leader_tracking_error:.6f}',
+            f'{d12:.6f}',
+            f'{d23:.6f}',
+            f'{e12:.6f}',
+            f'{e23:.6f}',
+            f'{r2_path_gap:.6f}',
+            f'{r3_path_gap:.6f}',
+            f'{r2_path_gap_error:.6f}',
+            f'{r3_path_gap_error:.6f}',
         ])
 
         self.csv_file.flush()
@@ -240,7 +362,8 @@ class TrajectoryLogger(Node):
 
     def destroy_node(self):
 
-        if hasattr(self, 'csv_file'):
+        if hasattr(self, 'csv_file') and not self.csv_file.closed:
+            self.csv_file.flush()
             self.csv_file.close()
 
         super().destroy_node()
