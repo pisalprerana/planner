@@ -94,17 +94,7 @@ echo "Launching simulation and controller..."
 # Simulation + planning + state + control + logger
 # ------------------------------------------------------------
 
-    ros2 launch planner \
-    dubins_leader_tracking.launch.py \
+exec ros2 launch planner \
+    dubins_three_robot_tracking.launch.py \
     run_name:="$run_name" \
-    simulation_profile:=light \
-    show_live_map:=false
-
-mission_csv="$planner_repo/results/${run_name}.csv"
-
-if [ -f "$mission_csv" ]; then
-    echo "Running tracking-error analysis..."
-    ros2 run planner tracking_error "$mission_csv"
-else
-    echo "Mission CSV not found: $mission_csv"
-fi
+    simulation_profile:=light

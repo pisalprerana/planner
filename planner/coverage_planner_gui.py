@@ -1147,29 +1147,17 @@ class CoveragePlannerGui(QMainWindow):
     def gazebo_window_exists(self):
         """Return True while the native Gazebo window exists."""
 
-        try:
-            output = subprocess.check_output(
-                ["wmctrl", "-lx"],
-                text=True,
-                stderr=subprocess.DEVNULL,
+        # Use exactly the same matching rule as the window
+        # positioning code.  Previously the lifecycle watcher
+        # used a stricter wmctrl string and could falsely decide
+        # that Gazebo had closed, killing the whole mission.
+        return (
+            self.find_x11_window(
+                "Gazebo Sim",
+                "gz-sim-gui",
             )
-
-        except (
-            FileNotFoundError,
-            subprocess.CalledProcessError,
-        ):
-            return False
-
-        for line in output.splitlines():
-            lower = line.lower()
-
-            if (
-                "gz-sim-gui.gazebo gui" in lower
-                and "gazebo sim" in lower
-            ):
-                return True
-
-        return False
+            is not None
+        )
 
     def watch_gazebo_window(self):
         """Stop the ROS mission when its Gazebo window closes."""
