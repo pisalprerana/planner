@@ -1251,7 +1251,7 @@ class CoveragePlannerGui(QMainWindow):
         # Safety gap:     30 px
         # Gazebo:       ~1050 px
 
-        safety_gap = 30
+        safety_gap = 0
 
         gui_width = self.gui_target_width
 
