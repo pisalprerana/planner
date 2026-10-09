@@ -293,7 +293,7 @@ def launch_experiment(context):
                     output_file,
 
                 'lookahead_distance':
-                    3.0,
+                    5.1,
 
                 'target_speed':
                     1.0,

@@ -1,142 +1,95 @@
-import csv
-import math
+
+#!/usr/bin/env python3
+
+import argparse
 from pathlib import Path
 
+import pandas as pd
 
-def calculate_tracking_error(input_file, output_file):
-    errors = []
 
-    with input_file.open(
-        "r",
-        newline="",
-        encoding="utf-8",
-    ) as infile, output_file.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as outfile:
+def calculate_tracking_error(input_file: Path, output_file: Path) -> None:
+    """Analyze the position-error values recorded in a mission CSV."""
 
-        reader = csv.DictReader(infile)
+    if not input_file.is_file():
+        raise FileNotFoundError(f"Input CSV not found: {input_file}")
 
-        fieldnames = reader.fieldnames + [
-            "position_error_m"
-        ]
+    df = pd.read_csv(input_file)
 
-        writer = csv.DictWriter(
-            outfile,
-            fieldnames=fieldnames,
-        )
-
-        writer.writeheader()
-
-        for row in reader:
-            x = float(row["x_m"])
-            y = float(row["y_m"])
-
-            reference_x = float(
-                row["reference_x_m"]
-            )
-            reference_y = float(
-                row["reference_y_m"]
-            )
-
-            error = math.hypot(
-                x - reference_x,
-                y - reference_y,
-            )
-
-            row["position_error_m"] = (
-                f"{error:.6f}"
-            )
-
-            writer.writerow(row)
-
-            errors.append(error)
-
-    if not errors:
+    if "position_error_m" not in df.columns:
         raise ValueError(
-            "No trajectory samples were found."
+            f"Column 'position_error_m' not found in {input_file}. "
+            f"Available columns: {', '.join(df.columns)}"
         )
 
-    mean_error = sum(errors) / len(errors)
+    errors = pd.to_numeric(df["position_error_m"], errors="coerce").dropna()
 
-    rmse = math.sqrt(
-        sum(error ** 2 for error in errors)
-        / len(errors)
-    )
+    if errors.empty:
+        raise ValueError(
+            f"No valid position_error_m values found in {input_file}"
+        )
 
-    minimum_error = min(errors)
-    maximum_error = max(errors)
+    # Save a copy of the original mission data with the error column retained.
+    df.to_csv(output_file, index=False)
 
-    valid_errors = [
-        error
-        for error in errors
-        if error <= 5.0
-    ]
+    mean_error = errors.mean()
+    rmse = (errors.pow(2).mean()) ** 0.5
+    min_error = errors.min()
+    max_error = errors.max()
+    within_5m = (errors <= 5.0).mean() * 100.0
 
-    mean_error_5m = (
-        sum(valid_errors) / len(valid_errors)
-    )
-
-    rmse_5m = math.sqrt(
-        sum(error ** 2 for error in valid_errors)
-        / len(valid_errors)
-    )
-
-    percentage_5m = (
-        100.0 * len(valid_errors) / len(errors)
-    )
-
-    print()
-    print("Tracking error analysis")
+    print("\nTracking Error Analysis")
     print("-----------------------")
-    print(f"Samples: {len(errors)}")
-    print(f"Mean error: {mean_error:.3f} m")
-    print(f"RMSE: {rmse:.3f} m")
-    print(f"Minimum error: {minimum_error:.3f} m")
-    print(f"Maximum error: {maximum_error:.3f} m")
-    print()
-    print("Excluding reference jumps > 5 m")
-    print("--------------------------------")
-    print(
-        f"Valid samples: "
-        f"{len(valid_errors)}/{len(errors)}"
-    )
-    print(
-        f"Samples within 5 m: "
-        f"{percentage_5m:.1f}%"
-    )
-    print(
-        f"Mean error: "
-        f"{mean_error_5m:.3f} m"
-    )
-    print(
-        f"RMSE: "
-        f"{rmse_5m:.3f} m"
-    )
-    print()
-    print(f"Error data saved to:")
-    print(output_file)
+    print(f"Input file:             {input_file}")
+    print(f"Output file:            {output_file}")
+    print(f"Valid samples:          {len(errors)}")
+    print(f"Mean position error:    {mean_error:.3f} m")
+    print(f"RMSE:                   {rmse:.3f} m")
+    print(f"Minimum position error:  {min_error:.3f} m")
+    print(f"Maximum position error:  {max_error:.3f} m")
+    print(f"Samples within 5 m:      {within_5m:.2f}%")
 
 
-def main():
-    input_file = Path(
-        "/home/bot/vrx_ws/results/test.csv"
+def main(args=None):
+    parser = argparse.ArgumentParser(
+        description="Analyze tracking error recorded in a mission CSV."
     )
-
-    output_file = Path(
-        "/home/bot/vrx_ws/results/test_with_error.csv"
+    parser.add_argument(
+        "input_file",
+        nargs="?",
+        help="Path to the mission CSV file (optional)",
     )
+    parsed_args = parser.parse_args(args)
 
-    if not input_file.exists():
-        raise FileNotFoundError(
-            f"Input CSV not found: {input_file}"
+    if parsed_args.input_file:
+        input_file = Path(parsed_args.input_file).expanduser().resolve()
+    else:
+        # If no file is provided, analyze the newest Dubins mission CSV.
+        results_dir = Path(__file__).resolve().parent / "results"
+
+        if not results_dir.exists():
+            results_dir = Path(__file__).resolve().parents[1] / "results"
+
+        mission_files = sorted(
+            results_dir.glob("dubins_*.csv"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
         )
 
-    calculate_tracking_error(
-        input_file,
-        output_file,
+        if not mission_files:
+            raise FileNotFoundError(
+                f"No dubins_*.csv mission files found in {results_dir}"
+            )
+
+        input_file = mission_files[0]
+
+    if not input_file.is_file():
+        raise FileNotFoundError(f"Mission CSV not found: {input_file}")
+
+    output_file = input_file.with_name(
+        f"{input_file.stem}_with_error.csv"
     )
+
+    calculate_tracking_error(input_file, output_file)
 
 
 if __name__ == "__main__":

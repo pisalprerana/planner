@@ -52,6 +52,7 @@ setup(
             'path_frame_transformer = planner.path_frame_transformer:main',
             'coverage_path_live_viewer = planner.coverage_path_live_viewer:main',
             'trajectory_logger = planner.trajectory_logger:main',
+            'tracking_error = planner.tracking_error:main',
             'coverage_planner_gui = planner.coverage_planner_gui:main',
 
         ],
