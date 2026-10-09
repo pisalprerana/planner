@@ -526,8 +526,10 @@ def generate_coverage_plan(
     turning_radius,
     show_plot=False,
     create_plot=True,
+    scan_direction="auto",
+    _trial=False,
 ):
-    """Generate a safe Dubins coverage path for a selected area."""
+    """Generate a safe Dubins coverage path using horizontal or vertical sweeps."""
 
     coverage_x_min = float(coverage_x_min)
     coverage_x_max = float(coverage_x_max)
@@ -590,6 +592,61 @@ def generate_coverage_plan(
     ):
         raise RuntimeError(
             "Minimum turning radius must be positive."
+        )
+
+    if scan_direction not in ("auto", "horizontal", "vertical"):
+        raise ValueError("scan_direction must be auto, horizontal, or vertical")
+
+    if scan_direction == "auto":
+        candidates = []
+        for direction in ("horizontal", "vertical"):
+            print(f"\n========== TRY {direction.upper()} SWEEPS ==========")
+            try:
+                candidate = generate_coverage_plan(
+                    coverage_x_min, coverage_x_max,
+                    coverage_y_min, coverage_y_max,
+                    path_width, turning_radius,
+                    show_plot=False, create_plot=False,
+                    scan_direction=direction, _trial=True,
+                )
+                candidates.append((direction, candidate))
+                print(
+                    f"{direction}: distance={candidate['total_distance']:.1f} m, "
+                    f"lines={len(candidate['coverage_lines'])}, "
+                    f"fallbacks={len(candidate['astar_transitions'])}, "
+                    f"coverage length={candidate['coverage_length']:.1f} m"
+                )
+            except (RuntimeError, ValueError) as error:
+                print(f"{direction}: not feasible ({error})")
+
+        if not candidates:
+            raise RuntimeError("Neither horizontal nor vertical coverage is feasible")
+
+        # Avoid selecting a significantly less complete sweep just because it is short.
+        # Scan-line length is a proxy, not an exact swept-area coverage measurement.
+        max_coverage = max(c['coverage_length'] for _, c in candidates)
+        eligible = [
+            (direction, c) for direction, c in candidates
+            if c['coverage_length'] >= 0.95 * max_coverage
+        ]
+        selected_direction, selected = min(
+            eligible,
+            key=lambda item: (
+                len(item[1]['astar_transitions']) > 0,
+                item[1]['total_distance'],
+                len(item[1]['coverage_lines']),
+            ),
+        )
+        print(f"\nSELECTED SCAN DIRECTION: {selected_direction.upper()}")
+        print("(Coverage-length filter: at least 95% of the best candidate)")
+        if _trial:
+            return selected
+        return generate_coverage_plan(
+            coverage_x_min, coverage_x_max,
+            coverage_y_min, coverage_y_max,
+            path_width, turning_radius,
+            show_plot=show_plot, create_plot=create_plot,
+            scan_direction=selected_direction, _trial=False,
         )
 
     row_spacing = max(
@@ -714,94 +771,65 @@ def generate_coverage_plan(
 
 
     # ============================================================
-    # FIND SAFE SEGMENTS ON EACH ROW
+    # BUILD HORIZONTAL OR VERTICAL COVERAGE LINES
     # ============================================================
 
-    def find_component_segments(row):
+    def find_component_segments(fixed_index):
+        """Contiguous safe cells along the scan line."""
         segments = []
         start = None
+        if scan_direction == "horizontal":
+            indices = range(col_min, col_max + 1)
+            to_cell = lambda variable: (fixed_index, variable)
+        else:
+            indices = range(row_min, row_max + 1)
+            to_cell = lambda variable: (variable, fixed_index)
 
-        for col in range(col_min, col_max + 1):
-
-            if is_component_safe(row, col):
+        for variable in indices:
+            if is_component_safe(*to_cell(variable)):
                 if start is None:
-                    start = col
-            else:
-                if start is not None:
-                    segments.append((start, col - 1))
-                    start = None
-
+                    start = variable
+            elif start is not None:
+                segments.append((start, variable - 1))
+                start = None
         if start is not None:
-            segments.append((start, col_max))
-
+            segments.append((start, indices.stop - 1))
         return segments
 
-
-    # ============================================================
-    # BUILD COVERAGE LINES
-    # ============================================================
-
     coverage_lines_grid = []
-    direction_left_to_right = True
+    forward = True
+    fixed_indices = (
+        range(row_min, row_max + 1, row_spacing)
+        if scan_direction == "horizontal"
+        else range(col_min, col_max + 1, row_spacing)
+    )
 
-    for row in range(
-        row_min,
-        row_max + 1,
-        row_spacing,
-    ):
-
-        segments = find_component_segments(row)
-
-        # Only retain useful segments.
+    for fixed in fixed_indices:
         useful = [
-            seg
-            for seg in segments
+            seg for seg in find_component_segments(fixed)
             if seg[1] - seg[0] >= 2
         ]
-
         if not useful:
             continue
-
-        ordered = (
-            useful
-            if direction_left_to_right
-            else list(reversed(useful))
-        )
-
-        for seg_start, seg_end in ordered:
-
-            if direction_left_to_right:
-                start_grid = (row, seg_start)
-                end_grid = (row, seg_end)
+        for lo, hi in (useful if forward else reversed(useful)):
+            start_value, end_value = (lo, hi) if forward else (hi, lo)
+            if scan_direction == "horizontal":
+                start_grid = (fixed, start_value)
+                end_grid = (fixed, end_value)
             else:
-                start_grid = (row, seg_end)
-                end_grid = (row, seg_start)
-
-            coverage_lines_grid.append(
-                (
-                    start_grid,
-                    end_grid,
-                    direction_left_to_right,
-                )
-            )
-
-        direction_left_to_right = not direction_left_to_right
-
+                start_grid = (start_value, fixed)
+                end_grid = (end_value, fixed)
+            coverage_lines_grid.append((start_grid, end_grid, forward))
+        forward = not forward
 
     if not coverage_lines_grid:
-        raise RuntimeError(
-            "No usable coverage lines exist in the selected "
-            "safe-water region."
-        )
+        raise RuntimeError("No usable coverage lines in the safe-water region")
 
-    print()
-    print("========================================")
+    print("\n========================================")
     print("COVERAGE")
     print("========================================")
-    print(
-        "Number of coverage lines:",
-        len(coverage_lines_grid),
-    )
+    print("Scan direction:", scan_direction)
+    print("Number of coverage lines:", len(coverage_lines_grid))
 
 
     # ============================================================
@@ -1873,47 +1901,48 @@ def generate_coverage_plan(
     print("A* last-resort transitions:", len(astar_transitions))
 
 
-    # ============================================================
-    # SAVE NPY
-    # ============================================================
+    if not _trial:
+        # ============================================================
+        # SAVE NPY
+        # ============================================================
 
-    np.save(
-        path_npy,
-        world_path,
-    )
-
-
-    # ============================================================
-    # SAVE CSV
-    # ============================================================
-
-    with path_csv.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-
-        writer = csv.writer(file)
-
-        writer.writerow(
-            [
-                "waypoint_id",
-                "x",
-                "y",
-                "yaw",
-            ]
+        np.save(
+            path_npy,
+            world_path,
         )
 
-        for i, point in enumerate(world_path):
+
+        # ============================================================
+        # SAVE CSV
+        # ============================================================
+
+        with path_csv.open(
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+
+            writer = csv.writer(file)
 
             writer.writerow(
                 [
-                    i,
-                    point[0],
-                    point[1],
-                    point[2],
+                    "waypoint_id",
+                    "x",
+                    "y",
+                    "yaw",
                 ]
             )
+
+            for i, point in enumerate(world_path):
+
+                writer.writerow(
+                    [
+                        i,
+                        point[0],
+                        point[1],
+                        point[2],
+                    ]
+                )
 
 
     # ============================================================
@@ -1948,7 +1977,7 @@ def generate_coverage_plan(
     print("Last waypoint:", world_path[-1])
 
 
-    if create_plot:
+    if create_plot and not _trial:
         # ============================================================
         # PLOT
         # ============================================================
@@ -2281,6 +2310,8 @@ def generate_coverage_plan(
         "astar_transitions": astar_transitions,
         "component_mask": component_mask,
         "total_distance": total_distance,
+        "coverage_length": sum(float(np.linalg.norm(line[-1] - line[0])) for line in coverage_lines_world),
+        "scan_direction": scan_direction,
         "coverage_bounds": (
             coverage_x_min,
             coverage_x_max,
