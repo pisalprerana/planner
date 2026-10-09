@@ -305,7 +305,23 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         # -----------------------------------------------------
-        # Bottom panel
+        # Bottom section:
+        # live coverage tracking + GUI instructions
+        # -----------------------------------------------------
+
+        bottom_layout = QHBoxLayout()
+
+        # Keep the lower section close to the window edges.
+        bottom_layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+        bottom_layout.setSpacing(4)
+
+        # -----------------------------------------------------
+        # Bottom-left: live coverage tracking
         # -----------------------------------------------------
 
         self.bottom_figure = Figure()
@@ -318,8 +334,53 @@ class CoveragePlannerGui(QMainWindow):
 
         self.draw_empty_bottom()
 
-        main_layout.addWidget(
+        bottom_layout.addWidget(
             self.bottom_canvas,
+            stretch=2,
+        )
+
+        # -----------------------------------------------------
+        # Bottom-right: numbered operating instructions
+        # -----------------------------------------------------
+
+        self.instructions_label = QLabel(
+            "<b>How to use the planner</b><br><br>"
+            "<b>1.</b> Select the boat's start and end points "
+            "by right-clicking on the Sydney Regatta map.<br><br>"
+            "<b>2.</b> Set the required path width and "
+            "minimum turning radius.<br><br>"
+            "<b>3.</b> Press <b>Generate Path</b>.<br><br>"
+            "<b>4.</b> Review the generated coverage path "
+            "in the tracking panel.<br><br>"
+            "<b>5.</b> Press <b>Accept and Launch</b> "
+            "to start Gazebo and the mission.<br><br>"
+            "<b>6.</b> Monitor the WAM-V position, "
+            "travelled path and speed live."
+        )
+
+        self.instructions_label.setWordWrap(True)
+        self.instructions_label.setAlignment(
+            Qt.AlignTop | Qt.AlignLeft
+        )
+
+        self.instructions_label.setStyleSheet(
+            """
+            QLabel {
+                padding: 6px;
+                border: 1px solid #b0b0b0;
+                border-radius: 4px;
+                background: white;
+            }
+            """
+        )
+
+        bottom_layout.addWidget(
+            self.instructions_label,
+            stretch=1,
+        )
+
+        main_layout.addLayout(
+            bottom_layout,
             stretch=1,
         )
 
@@ -671,7 +732,17 @@ class CoveragePlannerGui(QMainWindow):
             self.planner_thread.deleteLater
         )
 
+        self.planner_thread.finished.connect(
+            self.on_planner_thread_finished
+        )
+
         self.planner_thread.start()
+
+    def on_planner_thread_finished(self):
+        """Clear references after the planner worker thread finishes."""
+
+        self.planner_thread = None
+        self.planner_worker = None
 
     @pyqtSlot(object)
     def on_plan_finished(self, result):
