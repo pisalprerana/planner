@@ -11,7 +11,7 @@ import numpy as np
 import rclpy
 
 from rclpy.node import Node
-from tf2_ros import Buffer, TransformException, TransformListener
+from platoon_interfaces.msg import VehicleState
 
 from PyQt5.QtCore import (
     QObject,
@@ -136,26 +136,46 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         # -----------------------------------------------------
-        # Live Gazebo coverage tracking
+        # Live three-vehicle coverage tracking
         #
-        # Same TF source used by coverage_path_live_viewer.py:
+        # VehicleState is published in world_ned:
         #
-        #   world -> wamv/wamv/base_link
+        #   msg.x = North
+        #   msg.y = East
         #
-        # Coordinates remain in Gazebo ENU.
+        # The planner / GUI map is ENU:
+        #
+        #   plot X = East  = msg.y
+        #   plot Y = North = msg.x
         # -----------------------------------------------------
 
-        self.trail_x = []
-        self.trail_y = []
+        self.vehicle_tracking = {
+            "R1": {
+                "topic": "/r1/vehicle_state",
+                "latest": None,
+                "trail_x": [],
+                "trail_y": [],
+                "trail_artist": None,
+                "dot_artist": None,
+            },
+            "R2": {
+                "topic": "/r2/vehicle_state",
+                "latest": None,
+                "trail_x": [],
+                "trail_y": [],
+                "trail_artist": None,
+                "dot_artist": None,
+            },
+            "R3": {
+                "topic": "/r3/vehicle_state",
+                "latest": None,
+                "trail_x": [],
+                "trail_y": [],
+                "trail_artist": None,
+                "dot_artist": None,
+            },
+        }
 
-        self.previous_x = None
-        self.previous_y = None
-        self.previous_time = None
-
-        self.current_speed = 0.0
-
-        self.boat_dot = None
-        self.boat_trail = None
         self.boat_text = None
 
         if not rclpy.ok():
@@ -165,13 +185,21 @@ class CoveragePlannerGui(QMainWindow):
             "coverage_planner_gui_tracker"
         )
 
-        self.tf_buffer = Buffer()
+        self.state_subscriptions = []
 
-        self.tf_listener = TransformListener(
-            self.tf_buffer,
-            self.ros_node,
-            spin_thread=True,
-        )
+        for vehicle_name, tracker in self.vehicle_tracking.items():
+
+            subscription = self.ros_node.create_subscription(
+                VehicleState,
+                tracker["topic"],
+                lambda msg, name=vehicle_name:
+                    self.on_vehicle_state(name, msg),
+                20,
+            )
+
+            self.state_subscriptions.append(
+                subscription
+            )
 
         self.ros_timer = QTimer(self)
 
@@ -179,7 +207,6 @@ class CoveragePlannerGui(QMainWindow):
             self.update_live_tracking
         )
 
-        # Same update rate as coverage_path_live_viewer.py.
         self.ros_timer.start(100)
 
         self.load_map_data()
@@ -782,8 +809,21 @@ class CoveragePlannerGui(QMainWindow):
         self.path_width_input.setEnabled(True)
         self.turning_radius_input.setEnabled(True)
 
+    def on_vehicle_state(self, vehicle_name, msg):
+        """Store the newest VehicleState for one platoon member."""
+
+        tracker = self.vehicle_tracking.get(
+            vehicle_name
+        )
+
+        if tracker is None:
+            return
+
+        tracker["latest"] = msg
+
+
     def draw_plan_result(self, result):
-        """Display the same ENU path used by the Gazebo live tracker."""
+        """Display planned path and live R1/R2/R3 tracking."""
 
         self.bottom_ax.clear()
 
@@ -793,13 +833,7 @@ class CoveragePlannerGui(QMainWindow):
         path_y = world_path[:, 1]
 
         # -----------------------------------------------------
-        # Planned coverage path
-        #
-        # Identical coordinate convention to
-        # coverage_path_live_viewer.py:
-        #
-        # X = Gazebo world X / East
-        # Y = Gazebo world Y / North
+        # Planned ENU coverage path
         # -----------------------------------------------------
 
         self.bottom_ax.plot(
@@ -810,28 +844,30 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         # -----------------------------------------------------
-        # Actual path travelled by WAM-V
+        # Actual paths + current locations for R1/R2/R3
         # -----------------------------------------------------
 
-        self.boat_trail, = self.bottom_ax.plot(
-            self.trail_x,
-            self.trail_y,
-            linewidth=2.0,
-            label="Actual path",
-        )
+        for vehicle_name, tracker in self.vehicle_tracking.items():
 
-        # -----------------------------------------------------
-        # Current WAM-V
-        # -----------------------------------------------------
+            trail_artist, = self.bottom_ax.plot(
+                tracker["trail_x"],
+                tracker["trail_y"],
+                linewidth=1.8,
+                label=f"{vehicle_name} trail",
+            )
 
-        self.boat_dot, = self.bottom_ax.plot(
-            [],
-            [],
-            marker="o",
-            markersize=9,
-            linestyle="None",
-            label="WAM-V",
-        )
+            dot_artist, = self.bottom_ax.plot(
+                [],
+                [],
+                marker="o",
+                markersize=8,
+                linestyle="None",
+                color=trail_artist.get_color(),
+                label=vehicle_name,
+            )
+
+            tracker["trail_artist"] = trail_artist
+            tracker["dot_artist"] = dot_artist
 
         # -----------------------------------------------------
         # Live telemetry
@@ -840,7 +876,9 @@ class CoveragePlannerGui(QMainWindow):
         self.boat_text = self.bottom_ax.text(
             0.01,
             1.55,
-            "Boat position: waiting for TF...",
+            "R1: waiting for state...\n"
+            "R2: waiting for state...\n"
+            "R3: waiting for state...",
             transform=self.bottom_ax.transAxes,
             verticalalignment="top",
             horizontalalignment="left",
@@ -853,15 +891,15 @@ class CoveragePlannerGui(QMainWindow):
         )
 
         self.bottom_ax.set_xlabel(
-            "X [m]"
+            "East [m]"
         )
 
         self.bottom_ax.set_ylabel(
-            "Y [m]"
+            "North [m]"
         )
 
         self.bottom_ax.set_title(
-            "Sydney Regatta — Live Coverage Path Tracking"
+            "Sydney Regatta — Three-Vehicle Live Tracking"
         )
 
         self.bottom_ax.grid(
@@ -873,7 +911,7 @@ class CoveragePlannerGui(QMainWindow):
             loc="upper right",
             bbox_to_anchor=(0.99, 1.57),
             borderaxespad=0.0,
-            fontsize=8,
+            fontsize=7,
         )
 
         self.bottom_ax.set_aspect(
@@ -881,7 +919,6 @@ class CoveragePlannerGui(QMainWindow):
             adjustable="box",
         )
 
-        # Keep the whole generated mission visible.
         padding = 25.0
 
         self.bottom_ax.set_xlim(
@@ -894,92 +931,106 @@ class CoveragePlannerGui(QMainWindow):
             float(path_y.max()) + padding,
         )
 
-        # Leave room above the axes for telemetry + legend.
         self.bottom_figure.subplots_adjust(
             top=0.52
         )
 
         self.bottom_canvas.draw_idle()
 
+
     def update_live_tracking(self):
-        """Use the exact TF tracking source used by Gazebo viewer."""
+        """Update R1, R2 and R3 from VehicleState topics."""
 
         if self.ros_node is None:
             return
 
+        # Process pending ROS subscriptions without blocking Qt.
+        for _ in range(20):
+
+            try:
+                rclpy.spin_once(
+                    self.ros_node,
+                    timeout_sec=0.0,
+                )
+
+            except Exception:
+                break
+
         if (
             self.latest_plan is None
-            or self.boat_dot is None
-            or self.boat_trail is None
             or self.boat_text is None
         ):
             return
 
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                "world",
-                "wamv/wamv/base_link",
-                rclpy.time.Time(),
-            )
+        telemetry_lines = []
 
-        except TransformException:
-            return
+        for vehicle_name, tracker in self.vehicle_tracking.items():
 
-        x = transform.transform.translation.x
-        y = transform.transform.translation.y
+            msg = tracker["latest"]
 
-        current_time = time.monotonic()
+            if msg is None:
 
-        # Same speed calculation as coverage_path_live_viewer.py.
-        if (
-            self.previous_x is not None
-            and self.previous_y is not None
-            and self.previous_time is not None
-        ):
-            delta_x = x - self.previous_x
-            delta_y = y - self.previous_y
-            delta_time = (
-                current_time
-                - self.previous_time
-            )
-
-            if delta_time > 0.0:
-                distance = math.sqrt(
-                    delta_x ** 2
-                    + delta_y ** 2
+                telemetry_lines.append(
+                    f"{vehicle_name}: waiting for state..."
                 )
 
-                self.current_speed = (
-                    distance / delta_time
+                continue
+
+            # VehicleState is NED:
+            #
+            #   x = North
+            #   y = East
+            #
+            # GUI/planner is ENU:
+            #
+            #   plot X = East
+            #   plot Y = North
+            east = float(msg.y)
+            north = float(msg.x)
+
+            tracker["trail_x"].append(
+                east
+            )
+
+            tracker["trail_y"].append(
+                north
+            )
+
+            dot_artist = tracker[
+                "dot_artist"
+            ]
+
+            trail_artist = tracker[
+                "trail_artist"
+            ]
+
+            if dot_artist is not None:
+
+                dot_artist.set_data(
+                    [east],
+                    [north],
                 )
 
-        self.previous_x = x
-        self.previous_y = y
-        self.previous_time = current_time
+            if trail_artist is not None:
 
-        # Same behavior as standalone live viewer:
-        # append every TF update.
-        self.trail_x.append(x)
-        self.trail_y.append(y)
+                trail_artist.set_data(
+                    tracker["trail_x"],
+                    tracker["trail_y"],
+                )
 
-        self.boat_dot.set_data(
-            [x],
-            [y],
-        )
-
-        self.boat_trail.set_data(
-            self.trail_x,
-            self.trail_y,
-        )
+            telemetry_lines.append(
+                f"{vehicle_name}: "
+                f"E={east:.2f} m  "
+                f"N={north:.2f} m  "
+                f"v={msg.speed:.2f} m/s"
+            )
 
         self.boat_text.set_text(
-            f"Boat position:\n"
-            f"X: {x:.2f} m\n"
-            f"Y: {y:.2f} m\n"
-            f"Speed: {self.current_speed:.2f} m/s"
+            "\n".join(telemetry_lines)
         )
 
         self.bottom_canvas.draw_idle()
+
 
     def reset_selection(self):
 
@@ -992,13 +1043,15 @@ class CoveragePlannerGui(QMainWindow):
         self.coverage_points.clear()
         self.latest_plan = None
 
-        self.trail_x.clear()
-        self.trail_y.clear()
+        for tracker in self.vehicle_tracking.values():
 
-        self.previous_x = None
-        self.previous_y = None
-        self.previous_time = None
-        self.current_speed = 0.0
+            tracker["latest"] = None
+            tracker["trail_x"].clear()
+            tracker["trail_y"].clear()
+            tracker["trail_artist"] = None
+            tracker["dot_artist"] = None
+
+        self.boat_text = None
 
         self.generate_button.setEnabled(
             False
