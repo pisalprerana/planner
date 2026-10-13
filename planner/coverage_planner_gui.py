@@ -101,13 +101,14 @@ class CoveragePlannerGui(QMainWindow):
 
         self.setWindowTitle("VRX Coverage Planner")
 
-        # The current Qt layout has an effective minimum width
-        # of about 840 px. Locking it prevents GNOME/XWayland
-        # from unexpectedly enlarging the window.
+        # Preferred GUI width before Gazebo starts.
         self.gui_target_width = 840
-        self.setFixedWidth(
-            self.gui_target_width
-        )
+
+        # Allow the planner GUI to become narrower when Gazebo
+        # is running, so the two native windows can sit
+        # edge-to-edge without overlap.
+        self.setMinimumWidth(500)
+        self.setMaximumWidth(2000)
 
         self.coverage_points = []
 
@@ -1325,7 +1326,7 @@ class CoveragePlannerGui(QMainWindow):
         return True
 
     def position_gazebo_window(self):
-        """Tile Gazebo left 2/3 and GUI right 1/3."""
+        """Tile Gazebo and the planner GUI edge-to-edge without overlap."""
 
         self.gazebo_layout_attempts += 1
 
@@ -1342,7 +1343,6 @@ class CoveragePlannerGui(QMainWindow):
             gazebo_window_id is None
             or gui_window_id is None
         ):
-            # Give Gazebo up to ~30 seconds to appear.
             if self.gazebo_layout_attempts >= 60:
                 self.gazebo_layout_timer.stop()
 
@@ -1360,55 +1360,134 @@ class CoveragePlannerGui(QMainWindow):
         screen_width = geometry.width()
         screen_height = geometry.height()
 
-        # Leave enough room for the GUI's real minimum width.
-        #
-        # Screen width: 1920 px
-        # GUI width:     840 px
-        # Safety gap:     30 px
-        # Gazebo:       ~1050 px
-
-        safety_gap = 0
-
-        gui_width = self.gui_target_width
-
-        gazebo_width = (
-            screen_width
-            - gui_width
-            - safety_gap
+        screen_right = (
+            screen_x
+            + screen_width
         )
 
-        # -----------------------------------------------------
-        # Gazebo only: left side with a small safety gap.
-        #
-        # Do NOT resize the GUI repeatedly while Gazebo starts.
-        # -----------------------------------------------------
+        desired_gui_width = self.gui_target_width
+
+        # Start by requesting Gazebo to occupy the left side.
+        requested_gazebo_width = (
+            screen_width
+            - desired_gui_width
+        )
 
         self.set_x11_window_geometry(
             gazebo_window_id,
             screen_x,
             screen_y,
-            gazebo_width,
+            requested_gazebo_width,
+            screen_height,
+        )
+
+        QApplication.processEvents()
+
+        # -----------------------------------------------------
+        # Read Gazebo's ACTUAL geometry.
+        # Gazebo may enforce its own minimum width.
+        # -----------------------------------------------------
+
+        actual_gazebo_x = screen_x
+        actual_gazebo_width = requested_gazebo_width
+
+        try:
+            output = subprocess.check_output(
+                ["wmctrl", "-lG"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+
+            for line in output.splitlines():
+
+                parts = line.split()
+
+                if not parts:
+                    continue
+
+                if parts[0] != gazebo_window_id:
+                    continue
+
+                if len(parts) >= 6:
+                    actual_gazebo_x = int(parts[2])
+                    actual_gazebo_width = int(parts[4])
+
+                break
+
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+            ValueError,
+        ):
+            pass
+
+        actual_gazebo_right = (
+            actual_gazebo_x
+            + actual_gazebo_width
+        )
+
+        # -----------------------------------------------------
+        # Place GUI exactly at Gazebo's actual right edge.
+        # -----------------------------------------------------
+
+        # Qt/X11 shifts this GUI window 14 px to the right
+        # relative to the wmctrl geometry request on this system.
+        # Compensate for that measured offset so the visible GUI
+        # begins exactly where Gazebo ends.
+        gui_geometry_offset = 14
+
+        requested_gui_x = (
+            actual_gazebo_right
+            - gui_geometry_offset
+        )
+
+        available_gui_width = (
+            screen_right
+            - actual_gazebo_right
+        )
+
+        gui_width = min(
+            desired_gui_width,
+            available_gui_width,
+        )
+
+        gui_width = max(
+            500,
+            gui_width,
+        )
+
+        # Add the same offset to the requested width because Qt/X11
+        # removes approximately 14 px from the resulting client width.
+        requested_gui_width = (
+            gui_width
+            + gui_geometry_offset
+        )
+
+        self.set_x11_window_geometry(
+            gui_window_id,
+            requested_gui_x,
+            screen_y,
+            requested_gui_width,
             screen_height,
         )
 
         self.gazebo_window_seen = True
         self.gazebo_missing_checks = 0
 
-        # Start lifecycle watcher as soon as Gazebo is found.
         if not self.gazebo_watch_timer.isActive():
             self.gazebo_watch_timer.start(1000)
 
-        # Gazebo can resize itself during startup.
-        #
-        # Reapply layout for several seconds instead of
-        # stopping immediately after the first successful move.
+        # Gazebo can still resize itself while loading,
+        # so keep correcting the layout for several seconds.
         if self.gazebo_layout_attempts >= 20:
             self.gazebo_layout_timer.stop()
 
             print(
-                "Final window layout applied: "
-                f"Gazebo={gazebo_width}x{screen_height}, "
-                "GUI kept at right-third size"
+                "Final edge-to-edge layout applied: "
+                f"Gazebo x={actual_gazebo_x}, "
+                f"width={actual_gazebo_width}; "
+                f"GUI x={gui_x}, "
+                f"width={gui_width}"
             )
 
     def read_mission_output(self):

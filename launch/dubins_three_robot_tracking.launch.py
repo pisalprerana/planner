@@ -136,12 +136,6 @@ def launch_system(context):
         )
     )
 
-    platoon_planner_share = (
-        get_package_share_directory(
-            'platoon_planner'
-        )
-    )
-
     # =========================================================
     # Read first Dubins waypoint
     #
@@ -528,8 +522,8 @@ def launch_system(context):
 
     actions.append(
         Node(
-            package='platoon_planner',
-            executable='proactive_follower_planner_v22',
+            package='planner',
+            executable='proactive_follower_planner',
             namespace='r2',
             name='follower_planner',
             output='screen',
@@ -568,9 +562,9 @@ def launch_system(context):
                 },
 
                 os.path.join(
-                    platoon_planner_share,
+                    planner_share,
                     'config',
-                    'r2_follower_v22_tuned.yaml',
+                    'r2_follower_tuned.yaml',
                 ),
             ],
         )
@@ -612,7 +606,7 @@ def launch_system(context):
                 os.path.join(
                     control_share,
                     'config',
-                    'r2_follower_v22_tuned.yaml',
+                    'r2_follower_tuned.yaml',
                 ),
             ],
         )
@@ -624,8 +618,8 @@ def launch_system(context):
 
     actions.append(
         Node(
-            package='platoon_planner',
-            executable='proactive_follower_planner_v22',
+            package='planner',
+            executable='proactive_follower_planner',
             namespace='r3',
             name='follower_planner',
             output='screen',
@@ -670,9 +664,9 @@ def launch_system(context):
                 },
 
                 os.path.join(
-                    platoon_planner_share,
+                    planner_share,
                     'config',
-                    'r3_follower_v22_seed.yaml',
+                    'r3_follower_seed.yaml',
                 ),
             ],
         )
@@ -714,7 +708,7 @@ def launch_system(context):
                 os.path.join(
                     control_share,
                     'config',
-                    'r3_follower_v22_seed.yaml',
+                    'r3_follower_seed.yaml',
                 ),
             ],
         )
