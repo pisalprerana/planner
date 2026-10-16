@@ -1,0 +1,7 @@
+/r2/follower_planner:
+  ros__parameters:
+    historical_preview_decel: 0.2646349942459316
+    historical_preview_max_speed: 3.0
+    catchup_distance: 5.345285289922457
+    catchup_route_spacing: 2.0
+    catchup_bspline_samples_per_segment: 4.0
